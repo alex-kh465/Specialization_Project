@@ -57,7 +57,8 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle }) => {
                 <div className="w-8 h-8 bg-gradient-to-br from-blue-600 to-purple-600 rounded-lg flex items-center justify-center">
                   <Sparkles className="w-5 h-5 text-white" />
                 </div>
-                <h1 className="text-xl font-bold text-gray-900">StudyAI</h1>
+                <h1 className="text-xl font-bold text-gray-900">GenEWA</h1>
+                <p className="text-xs text-gray-500 leading-tight">LOCK IN</p>
               </div>
               <button onClick={onToggle} className="lg:hidden">
                 <X className="w-6 h-6 text-gray-500" />

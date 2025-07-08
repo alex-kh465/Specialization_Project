@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Calendar as CalendarIcon, Plus, Clock, BookOpen, AlertCircle } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Calendar as CalendarIcon, Plus, Clock, BookOpen, AlertCircle, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
@@ -20,26 +20,74 @@ interface NewEvent {
   type: Event['type'];
 }
 
+const API_URL = 'http://localhost:4000';
+const getToken = () => (typeof window !== 'undefined' ? localStorage.getItem('token') : '');
+
 const Calendar: React.FC = () => {
-  const [events, setEvents] = useState<Event[]>([
-    { id: '1', title: 'Math Exam', date: '2024-01-20', time: '10:00', type: 'exam' },
-    { id: '2', title: 'Physics Assignment Due', date: '2024-01-22', time: '23:59', type: 'assignment' },
-    { id: '3', title: 'Chemistry Lab', date: '2024-01-23', time: '14:00', type: 'class' }
-  ]);
+  const [events, setEvents] = useState<Event[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
   const [newEvent, setNewEvent] = useState<NewEvent>({ title: '', date: '', time: '', type: 'personal' });
+  const [addingEvent, setAddingEvent] = useState(false);
 
-  const addEvent = () => {
-    if (newEvent.title && newEvent.date && newEvent.time) {
-      const event: Event = {
-        id: Date.now().toString(),
-        ...newEvent
-      };
-      setEvents(prev => [...prev, event]);
-      setNewEvent({ title: '', date: '', time: '', type: 'personal' });
-      setShowAddModal(false);
+  const fetchEvents = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/calendar/events`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+      });
+      
+      if (!res.ok) {
+        throw new Error('Failed to fetch events');
+      }
+      
+      const data = await res.json();
+      setEvents(data);
+    } catch (err: any) {
+      setError(err.message || 'Failed to load events');
+    } finally {
+      setLoading(false);
     }
   };
+
+  const addEvent = async () => {
+    if (newEvent.title && newEvent.date && newEvent.time) {
+      setAddingEvent(true);
+      try {
+        const token = getToken();
+        const res = await fetch(`${API_URL}/calendar/events`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(newEvent),
+        });
+        
+        if (!res.ok) {
+          throw new Error('Failed to add event');
+        }
+        
+        const addedEvent = await res.json();
+        setEvents(prev => [...prev, addedEvent]);
+        setNewEvent({ title: '', date: '', time: '', type: 'personal' });
+        setShowAddModal(false);
+      } catch (err: any) {
+        alert(`Error adding event: ${err.message}`);
+      } finally {
+        setAddingEvent(false);
+      }
+    }
+  };
+
+  useEffect(() => {
+    fetchEvents();
+  }, []);
 
   const getEventIcon = (type: string) => {
     switch (type) {

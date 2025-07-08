@@ -1,5 +1,5 @@
 
-import React from 'react';
+import React, { useState } from 'react';
 import { MessageCircle, Calendar, Mail, Sun, FileText, Calculator, Crown, Zap, Lock } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -20,21 +20,56 @@ const Usage: React.FC = () => {
   const currentPlan = 'Free' as 'Free' | 'Pro'; // This would come from user context/auth
   const isPremium = currentPlan === 'Pro';
 
-  const featureUsage: FeatureUsage[] = [
-    { name: 'AI Chat Messages', icon: MessageCircle, current: 15, total: 25, color: 'blue' },
-    { name: 'Calendar Events', icon: Calendar, current: 8, total: 50, color: 'green' },
-    { name: 'Email Summaries', icon: Mail, current: 0, total: 10, isPro: true, color: 'yellow' },
-    { name: 'Weather Requests', icon: Sun, current: 12, total: 100, color: 'green' },
-    { name: 'Daily Digests', icon: FileText, current: 3, total: 5, color: 'red' },
-    { name: 'Budget Exports', icon: Calculator, current: 2, total: 3, color: 'yellow' }
-  ];
+  const [usageData, setUsageData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
-  const weeklyStats = {
-    totalInteractions: 127,
-    mostUsedFeature: 'AI Chat',
-    timesSaved: '2.5 hours',
-    streakDays: 7
+  const API_URL = 'http://localhost:4000';
+  const getToken = () => (typeof window !== 'undefined' ? localStorage.getItem('token') : '');
+
+  const fetchUsageStats = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/usage/stats`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+      });
+      
+      if (!res.ok) {
+        throw new Error('Failed to fetch usage stats');
+      }
+      
+      const data = await res.json();
+      setUsageData(data);
+    } catch (err: any) {
+      setError(err.message || 'Failed to load usage data');
+    } finally {
+      setLoading(false);
+    }
   };
+
+  const featureUsage: FeatureUsage[] = usageData ? [
+    { name: 'AI Chat Messages', icon: MessageCircle, current: usageData.limits.aiChats.current, total: usageData.limits.aiChats.total, color: 'blue' },
+    { name: 'Calendar Events', icon: Calendar, current: usageData.limits.calendarEvents.current, total: usageData.limits.calendarEvents.total, color: 'green' },
+    { name: 'Email Summaries', icon: Mail, current: usageData.limits.emailSummaries.current, total: usageData.limits.emailSummaries.total, isPro: usageData.limits.emailSummaries.isPro, color: 'yellow' },
+    { name: 'Weather Requests', icon: Sun, current: usageData.limits.weatherRequests.current, total: usageData.limits.weatherRequests.total, color: 'green' },
+    { name: 'Daily Digests', icon: FileText, current: usageData.limits.dailyDigests.current, total: usageData.limits.dailyDigests.total, color: 'red' },
+    { name: 'Budget Exports', icon: Calculator, current: usageData.limits.budgetExports.current, total: usageData.limits.budgetExports.total, color: 'yellow' }
+  ] : [];
+
+  const weeklyStats = usageData ? usageData.weekly : {
+    totalInteractions: 0,
+    mostUsedFeature: 'Loading...',
+    timesSaved: '0 hours',
+    streakDays: 0
+  };
+
+  React.useEffect(() => {
+    fetchUsageStats();
+  }, []);
 
   return (
     <div className="space-y-6">

@@ -24,10 +24,10 @@ const Dashboard: React.FC = () => {
       {/* Welcome Section */}
       <div className="bg-gradient-to-r from-blue-600 to-purple-600 rounded-2xl p-6 text-white">
         <h1 className="text-2xl lg:text-3xl font-bold mb-2">
-          Welcome back, Student! 👋
+          Welcome to GenEWA! 👋
         </h1>
         <p className="text-blue-100 mb-4">
-          Ready to boost your academic productivity today?
+          LOCK IN and boost your academic productivity today!
         </p>
         <div className="flex flex-wrap gap-4">
           <div className="bg-white/20 backdrop-blur-sm rounded-lg p-3">

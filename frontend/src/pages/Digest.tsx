@@ -49,13 +49,38 @@ const Digest: React.FC = () => {
     }
   };
 
+  const [realDigest, setRealDigest] = useState(null);
+  const [digestError, setDigestError] = useState('');
+
+  const API_URL = 'http://localhost:4000';
+  const getToken = () => (typeof window !== 'undefined' ? localStorage.getItem('token') : '');
+
   const generateDigest = async () => {
     setIsGenerating(true);
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    setIsGenerating(false);
-    // In real app, this would trigger email send
-    alert('Daily digest sent to your email!');
+    setDigestError('');
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/digest/generate`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      
+      if (!res.ok) {
+        throw new Error('Failed to generate digest');
+      }
+      
+      const data = await res.json();
+      setRealDigest(data);
+      alert('Daily digest generated successfully! Check the preview below.');
+    } catch (err) {
+      setDigestError(err.message || 'Failed to generate digest');
+      alert('Failed to generate digest. Please try again.');
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
   const updateSetting = (key: string, value: any) => {

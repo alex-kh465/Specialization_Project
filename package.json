@@ -1,4 +1,7 @@
 {
+  "name": "genewa-efficient-workflow-access",
+  "version": "1.0.0",
+  "description": "GenEWA(Efficient Workflow Access) - LOCK IN: Premium AI-powered study assistant for Indian college students",
   "dependencies": {
     "jsonwebtoken": "^9.0.2",
     "node-fetch": "^3.3.2"

@@ -1,6 +1,6 @@
-# StudyAI - India Student Hub 🎓
+# GenEWA(Efficient Workflow Access) - LOCK IN 🎓
 
-A premium AI-powered study assistant specifically designed for Indian college students. This comprehensive platform provides intelligent tools to boost academic productivity, manage student life, and enhance learning outcomes.
+A premium AI-powered study assistant specifically designed for Indian college students. GenEWA provides intelligent tools to boost academic productivity, manage student life, and enhance learning outcomes. LOCK IN to your success with efficient workflow access.
 
 ## 📋 Table of Contents
 
@@ -371,9 +371,9 @@ This project is licensed under the MIT License. See the `LICENSE` file for detai
 ## 🆘 Support
 
 For support, please contact:
-- Email: support@studyai.app
+- Email: support@genewa.app
 - GitHub Issues: [Create an issue](../../issues)
-- Twitter: [@studyai_app](https://twitter.com/studyai_app)
+- Twitter: [@genewa_app](https://twitter.com/genewa_app)
 
 ## 🚀 Deployment
 
@@ -396,6 +396,6 @@ Ensure all environment variables are properly configured in your deployment plat
 
 ---
 
-**Built with ❤️ for Indian students by the StudyAI team**
+**Built with ❤️ for Indian students by the GenEWA team**
 
-*Empowering students with AI-driven productivity tools*
+*LOCK IN - Empowering students with efficient workflow access and AI-driven productivity tools*

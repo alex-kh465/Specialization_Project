@@ -1,8 +1,9 @@
 
 import React, { useState, useEffect } from 'react';
-import { Sun, Cloud, CloudRain, Wind, Droplets, Eye, Thermometer } from 'lucide-react';
+import { Sun, Cloud, CloudRain, Wind, Droplets, Eye, Thermometer, RefreshCw } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 
 interface WeatherData {
   temperature: number;
@@ -12,19 +13,22 @@ interface WeatherData {
   visibility: number;
   feelsLike: number;
   location: string;
+  forecast?: Array<{
+    day: string;
+    high: number;
+    low: number;
+    condition: string;
+  }>;
 }
 
+const API_URL = 'http://localhost:4000';
+const getToken = () => (typeof window !== 'undefined' ? localStorage.getItem('token') : '');
+
 const Weather: React.FC = () => {
-  const [weather, setWeather] = useState<WeatherData>({
-    temperature: 28,
-    condition: 'Sunny',
-    humidity: 65,
-    windSpeed: 12,
-    visibility: 10,
-    feelsLike: 32,
-    location: 'Delhi, India'
-  });
-  
+  const [weather, setWeather] = useState<WeatherData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [city, setCity] = useState('Delhi');
   const [quote, setQuote] = useState('');
   const [suggestion, setSuggestion] = useState('');
 
@@ -35,6 +39,31 @@ const Weather: React.FC = () => {
     "The future belongs to those who believe in the beauty of their dreams. ✨",
     "Education is the passport to the future. Study hard! 🎓"
   ];
+
+  const fetchWeather = async (cityName: string = city) => {
+    setLoading(true);
+    setError('');
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/weather?city=${encodeURIComponent(cityName)}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+      });
+      
+      if (!res.ok) {
+        throw new Error('Failed to fetch weather data');
+      }
+      
+      const data = await res.json();
+      setWeather(data);
+      setSuggestion(getWeatherSuggestions(data.condition, data.temperature));
+    } catch (err: any) {
+      setError(err.message || 'Failed to load weather data');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const getWeatherSuggestions = (condition: string, temp: number) => {
     if (condition.toLowerCase().includes('rain')) {
@@ -56,6 +85,7 @@ const Weather: React.FC = () => {
         return <Sun className="w-16 h-16 text-yellow-500" />;
       case 'cloudy':
       case 'overcast':
+      case 'partly cloudy':
         return <Cloud className="w-16 h-16 text-gray-500" />;
       case 'rainy':
       case 'rain':
@@ -68,8 +98,48 @@ const Weather: React.FC = () => {
   useEffect(() => {
     // Set random quote on component mount
     setQuote(quotes[Math.floor(Math.random() * quotes.length)]);
-    setSuggestion(getWeatherSuggestions(weather.condition, weather.temperature));
+    // Fetch weather data
+    fetchWeather();
   }, []);
+
+  const handleCityChange = () => {
+    if (city.trim()) {
+      fetchWeather(city.trim());
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Weather & Daily Tips</h1>
+          <p className="text-gray-600">Loading weather data...</p>
+        </div>
+        <div className="flex items-center justify-center h-64">
+          <RefreshCw className="w-8 h-8 animate-spin text-blue-500" />
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Weather & Daily Tips</h1>
+          <p className="text-red-600">Error: {error}</p>
+        </div>
+        <Button onClick={() => fetchWeather()} className="mt-4">
+          <RefreshCw className="w-4 h-4 mr-2" />
+          Try Again
+        </Button>
+      </div>
+    );
+  }
+
+  if (!weather) {
+    return null;
+  }
 
   return (
     <div className="space-y-6">

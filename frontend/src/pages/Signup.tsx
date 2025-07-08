@@ -47,10 +47,10 @@ const Signup: React.FC = () => {
       <div className="bg-white p-10 rounded-2xl shadow-xl w-full max-w-md flex flex-col items-center">
         <div className="mb-6 flex flex-col items-center">
           <div className="w-16 h-16 rounded-full bg-gradient-to-br from-blue-500 to-purple-500 flex items-center justify-center mb-2">
-            <span className="text-white text-3xl font-bold">ISH</span>
+            <span className="text-white text-xl font-bold">GWA</span>
           </div>
-          <h1 className="text-3xl font-extrabold text-gray-900 mb-1">India Student Hub</h1>
-          <p className="text-gray-500 text-sm">Create your account</p>
+          <h1 className="text-3xl font-extrabold text-gray-900 mb-1">GenEWA(Efficient Workflow Access)</h1>
+          <p className="text-gray-500 text-sm font-semibold">LOCK IN</p>
         </div>
         <form onSubmit={handleSignup} className="w-full space-y-5">
           {error && <div className="text-red-500 text-center">{error}</div>}
