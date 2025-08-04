@@ -1,5 +1,6 @@
 
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Bell, Shield, Moon, Globe, Smartphone, Mail, Lock, Download, Trash2 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -9,8 +10,26 @@ import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { Badge } from '@/components/ui/badge';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
+import { useToast } from '@/hooks/use-toast';
+
+const API_URL = 'http://localhost:4000';
+const getToken = () => (typeof window !== 'undefined' ? localStorage.getItem('token') : '');
 
 const Settings: React.FC = () => {
+  const navigate = useNavigate();
+  const { toast } = useToast();
+  const [isDeleting, setIsDeleting] = useState(false);
   const [settings, setSettings] = useState({
     notifications: {
       emailNotifications: true,
@@ -42,6 +61,44 @@ const Settings: React.FC = () => {
         [key]: value
       }
     }));
+  };
+
+  const handleDeleteAccount = async () => {
+    setIsDeleting(true);
+    try {
+      const token = getToken();
+      const response = await fetch(`${API_URL}/auth/delete-account`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to delete account');
+      }
+
+      // Clear local storage
+      localStorage.removeItem('token');
+      
+      toast({
+        title: 'Account deleted',
+        description: 'Your account has been permanently deleted.',
+      });
+
+      // Redirect to login page
+      navigate('/login', { replace: true });
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.message || 'Failed to delete account',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsDeleting(false);
+    }
   };
 
   return (
@@ -299,10 +356,41 @@ const Settings: React.FC = () => {
               <p className="text-sm text-red-600 mb-3">
                 Once you delete your account, there is no going back. Please be certain.
               </p>
-              <Button variant="destructive" size="sm">
-                <Trash2 className="w-4 h-4 mr-2" />
-                Delete Account
-              </Button>
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button variant="destructive" size="sm" disabled={isDeleting}>
+                    <Trash2 className="w-4 h-4 mr-2" />
+                    {isDeleting ? 'Deleting...' : 'Delete Account'}
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This action cannot be undone. This will permanently delete your account
+                      and remove all your data from our servers, including:
+                      <br /><br />
+                      • Your profile information
+                      • All expense records
+                      • AI chat history
+                      • Calendar events
+                      • Settings and preferences
+                      <br /><br />
+                      You will need to create a new account to use our services again.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      onClick={handleDeleteAccount}
+                      className="bg-red-600 hover:bg-red-700"
+                      disabled={isDeleting}
+                    >
+                      {isDeleting ? 'Deleting...' : 'Delete Account'}
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
             </div>
           </CardContent>
         </Card>

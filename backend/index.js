@@ -184,6 +184,103 @@ app.post('/auth/signup', async (req, res) => {
   }
 });
 
+// Forgot password endpoint
+app.post('/auth/forgot-password', async (req, res) => {
+  const { email } = req.body;
+  if (!email) {
+    return res.status(400).json({ error: 'Email is required' });
+  }
+  try {
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${process.env.FRONTEND_URL || 'http://localhost:8080'}/reset-password`,
+    });
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.json({ message: 'Password reset email sent successfully' });
+  } catch (err) {
+    console.error('Forgot password error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Reset password endpoint
+app.post('/auth/reset-password', async (req, res) => {
+  const { access_token, refresh_token, new_password } = req.body;
+  if (!access_token || !refresh_token || !new_password) {
+    return res.status(400).json({ error: 'Access token, refresh token, and new password are required' });
+  }
+  try {
+    // Set the session using the tokens from the reset password link
+    const { data: sessionData, error: sessionError } = await supabase.auth.setSession({
+      access_token,
+      refresh_token,
+    });
+    if (sessionError) {
+      return res.status(400).json({ error: sessionError.message });
+    }
+    
+    // Update the password
+    const { error: updateError } = await supabase.auth.updateUser({ password: new_password });
+    if (updateError) {
+      return res.status(400).json({ error: updateError.message });
+    }
+    
+    res.json({ message: 'Password updated successfully' });
+  } catch (err) {
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Google OAuth callback endpoint
+app.post('/auth/google-callback', async (req, res) => {
+  const { access_token, refresh_token } = req.body;
+  if (!access_token || !refresh_token) {
+    return res.status(400).json({ error: 'Access token and refresh token are required' });
+  }
+  try {
+    // Set the session using the tokens from Google OAuth
+    const { data: sessionData, error: sessionError } = await supabase.auth.setSession({
+      access_token,
+      refresh_token,
+    });
+    if (sessionError) {
+      return res.status(400).json({ error: sessionError.message });
+    }
+    
+    // Get user data
+    const { data: { user }, error: userError } = await supabase.auth.getUser(access_token);
+    if (userError) {
+      return res.status(400).json({ error: userError.message });
+    }
+    
+    // Create or update profile if user exists
+    if (user) {
+      const { data: existingProfile } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('user_id', user.id)
+        .single();
+      
+      if (!existingProfile) {
+        // Create new profile for Google user
+        await supabase.from('profiles').insert([
+          {
+            user_id: user.id,
+            name: user.user_metadata?.full_name || user.email?.split('@')[0] || '',
+            email: user.email,
+          },
+        ]);
+      }
+    }
+    
+    res.json({ token: access_token, user });
+  } catch (err) {
+    console.error('Google OAuth callback error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // AI Chat endpoint (Groq integration)
 app.post('/ai/chat', authenticate, async (req, res) => {
   const { message } = req.body;
@@ -436,8 +533,40 @@ app.post('/email/summarize', authenticate, async (req, res) => {
   }
 });
 
+// Delete account endpoint
+app.delete('/auth/delete-account', authenticate, async (req, res) => {
+  try {
+    const userId = req.user_id;
+    
+    // Delete user's profile first
+    await supabase
+      .from('profiles')
+      .delete()
+      .eq('user_id', userId);
+    
+    // Delete user's expenses
+    await supabase
+      .from('expenses')
+      .delete()
+      .eq('user_id', userId);
+    
+    // Delete the user account from Supabase Auth
+    const { error } = await supabase.auth.admin.deleteUser(userId);
+    
+    if (error) {
+      console.error('Error deleting user:', error);
+      return res.status(400).json({ error: error.message });
+    }
+    
+    res.json({ message: 'Account deleted successfully' });
+  } catch (err) {
+    console.error('Delete account error:', err);
+    res.status(500).json({ error: 'Failed to delete account' });
+  }
+});
+
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`Backend API running on port ${PORT}`);
-}); 
+});
 

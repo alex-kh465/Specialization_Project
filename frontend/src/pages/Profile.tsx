@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { User, Mail, Phone, MapPin, Calendar, Edit, Save, X, Camera } from 'lucide-react';
+import { User, Mail, Phone, MapPin, Calendar, Edit, Save, X, Camera, AlertCircle } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 
 const API_URL = 'http://localhost:4000';
 const getToken = () => (typeof window !== 'undefined' ? localStorage.getItem('token') : '');
@@ -39,6 +40,12 @@ const Profile: React.FC = () => {
         const data = await res.json();
         setProfile(data);
         setEditProfile(data);
+
+        // Activate edit mode if profile is incomplete
+        if (!data.name || !data.college) {
+          console.log('Profile incomplete, entering edit mode');
+          setIsEditing(true);
+        }
       } catch (err: any) {
         setError(err.message);
       } finally {
@@ -92,8 +99,20 @@ const Profile: React.FC = () => {
   if (loading) return <div>Loading profile...</div>;
   if (error) return <div className="text-red-500">{error}</div>;
 
+  const isNewUser = (!profile.name || !profile.college) && isEditing;
+
   return (
     <div className="space-y-6">
+      {/* Welcome alert for new users */}
+      {isNewUser && (
+        <Alert>
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>
+            Welcome to GenEWA! Please complete your profile information below to get started with all features.
+          </AlertDescription>
+        </Alert>
+      )}
+      
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
