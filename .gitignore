@@ -315,3 +315,6 @@ Icon
 Network Trash Folder
 Temporary Items
 .apdisk 
+
+#Google Credenntials
+backend/.google-tokens.json

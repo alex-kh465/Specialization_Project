@@ -14,7 +14,6 @@ dist-ssr
 
 # Editor directories and files
 .vscode/*
-backend/.google-tokens.json
 !.vscode/extensions.json
 .idea
 .DS_Store
