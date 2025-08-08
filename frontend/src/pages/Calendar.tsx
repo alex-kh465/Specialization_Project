@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
+import GoogleCalendarIntegration from '@/components/calendar/GoogleCalendarIntegration';
 
 interface Event {
   id: string;
@@ -125,13 +126,10 @@ const Calendar: React.FC = () => {
       <Card className="p-6">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold">Google Calendar Sync</h2>
-          <Button variant="outline">
-            <CalendarIcon className="w-4 h-4 mr-2" />
-            Connect Google Calendar
-          </Button>
+          <GoogleCalendarIntegration />
         </div>
         <p className="text-sm text-gray-600">
-          Sync your academic schedule with Google Calendar for seamless planning.
+          Sync your academic schedule with Google Calendar for seamless planning and AI-powered event creation through chat.
         </p>
       </Card>
 

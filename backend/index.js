@@ -4,6 +4,8 @@ import dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
 import fetch from 'node-fetch';
+import * as chrono from 'chrono-node';
+import GoogleCalendarService from './calendar-service.js';
 
 
 // Load environment variables
@@ -18,6 +20,9 @@ const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
+
+// Google Calendar Service
+const calendarService = new GoogleCalendarService();
 
 // Middleware to extract user_id from Authorization header (JWT)
 function authenticate(req, res, next) {
@@ -281,12 +286,45 @@ app.post('/auth/google-callback', async (req, res) => {
   }
 });
 
-// AI Chat endpoint (Groq integration)
+// AI Chat endpoint with Calendar Integration (Groq integration)
 app.post('/ai/chat', authenticate, async (req, res) => {
   const { message } = req.body;
   console.log('Received message:', message);
   if (!message) return res.status(400).json({ error: 'Message is required' });
+  
   try {
+    // Enhanced system prompt for calendar scheduling
+    const systemPrompt = `You are GenEWA's AI assistant, specializing in helping Indian college students with academics and productivity.
+
+SPECIAL CAPABILITY: Calendar Event Creation
+When users request to schedule meetings, events, or set reminders, extract the following information and respond with a JSON object in this exact format:
+
+{
+  "type": "calendar_event",
+  "event": {
+    "title": "extracted event title",
+    "description": "extracted description or purpose",
+    "start": "YYYY-MM-DDTHH:MM:SS",
+    "end": "YYYY-MM-DDTHH:MM:SS",
+    "location": "extracted location (if mentioned)",
+    "attendees": ["email1@example.com", "email2@example.com"]
+  },
+  "message": "I'll help you schedule that! Creating the event now..."
+}
+
+For date/time parsing:
+- Use current date as reference: ${new Date().toISOString()}
+- Default duration: 1 hour if not specified
+- Indian timezone: Use IST (Asia/Kolkata)
+- Handle natural language like "tomorrow at 2pm", "next Friday", "in 2 hours"
+
+For non-scheduling requests, respond normally as an academic assistant.
+
+Examples of scheduling requests:
+- "Schedule a meeting with my study group tomorrow at 3pm"
+- "Remind me to submit my assignment on Friday"
+- "Set up a lecture review session next week"`;
+
     const groqRes = await fetch(process.env.GROQ_API_URL, {
       method: 'POST',
       headers: {
@@ -296,14 +334,57 @@ app.post('/ai/chat', authenticate, async (req, res) => {
       body: JSON.stringify({
         model: 'llama-3.3-70b-versatile',
         messages: [
+          { role: 'system', content: systemPrompt },
           { role: 'user', content: message }
         ]
       })
     });
+    
     const data = await groqRes.json();
     console.log('Groq API response:', data);
+    
     if (!groqRes.ok) return res.status(500).json({ error: data.error || 'Groq API error' });
-    res.json({ response: data.choices?.[0]?.message?.content || 'No response from AI.' });
+    
+    const aiResponse = data.choices?.[0]?.message?.content || 'No response from AI.';
+    
+    // Check if response contains calendar event JSON
+    try {
+      const jsonMatch = aiResponse.match(/\{[\s\S]*"type"\s*:\s*"calendar_event"[\s\S]*\}/);
+      if (jsonMatch) {
+        const eventData = JSON.parse(jsonMatch[0]);
+        
+        // Create the calendar event if Google Calendar is authenticated
+        let calendarResult = null;
+        if (await calendarService.isAuthenticated()) {
+          try {
+            calendarResult = await calendarService.createEvent(eventData.event);
+          } catch (calError) {
+            console.error('Calendar creation error:', calError);
+            // Continue without calendar creation
+          }
+        }
+        
+        // Parse dates for better formatting
+        const startDate = new Date(eventData.event.start);
+        const endDate = new Date(eventData.event.end);
+        
+        const responseMessage = calendarResult ? 
+          `✅ **Event scheduled successfully!**\n\n📅 **${eventData.event.title}**\n📍 ${eventData.event.location || 'No location specified'}\n🕐 ${startDate.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} - ${endDate.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })}\n\n${eventData.event.description ? '📝 ' + eventData.event.description : ''}\n\nThe event has been added to your Google Calendar. You'll receive notifications as configured.` :
+          `📅 **Event details extracted:**\n\n**${eventData.event.title}**\n🕐 ${startDate.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} - ${endDate.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })}\n📍 ${eventData.event.location || 'No location specified'}\n\n${eventData.event.description ? '📝 ' + eventData.event.description + '\n\n' : ''}⚠️ To automatically add this to your Google Calendar, please connect your Google account in the Calendar section.`;
+        
+        res.json({ 
+          response: responseMessage,
+          calendarEvent: eventData.event,
+          calendarCreated: !!calendarResult
+        });
+        return;
+      }
+    } catch (parseError) {
+      console.log('No calendar event detected, continuing with normal response');
+    }
+    
+    // Regular AI response
+    res.json({ response: aiResponse });
   } catch (err) {
     console.error('Groq API error:', err);
     res.status(500).json({ error: 'Failed to connect to Groq API' });
@@ -530,6 +611,143 @@ app.post('/email/summarize', authenticate, async (req, res) => {
   } catch (err) {
     console.error('Email summarization error:', err);
     res.status(500).json({ error: 'Failed to summarize email' });
+  }
+});
+
+// Google Calendar OAuth callback endpoint (no auth required)
+app.get('/oauth2callback', async (req, res) => {
+  try {
+    const { code, error, state } = req.query;
+    
+    if (error) {
+      console.error('OAuth error:', error);
+      return res.send(`
+        <html>
+          <body>
+            <h1>Authorization Failed</h1>
+            <p>Error: ${error}</p>
+            <script>window.close();</script>
+          </body>
+        </html>
+      `);
+    }
+    
+    if (!code) {
+      return res.status(400).send(`
+        <html>
+          <body>
+            <h1>Authorization Failed</h1>
+            <p>No authorization code received</p>
+            <script>window.close();</script>
+          </body>
+        </html>
+      `);
+    }
+    
+    // Exchange code for tokens
+    try {
+      const tokens = await calendarService.getAccessToken(code);
+      
+      // Success page that closes the popup
+      res.send(`
+        <html>
+          <body>
+            <h1>Authorization Successful!</h1>
+            <p>Your Google Calendar is now connected. You can close this window.</p>
+            <script>
+              // Send message to parent window and close popup
+              if (window.opener) {
+                window.opener.postMessage({ type: 'GOOGLE_AUTH_SUCCESS' }, '*');
+              }
+              setTimeout(() => window.close(), 2000);
+            </script>
+          </body>
+        </html>
+      `);
+    } catch (tokenError) {
+      console.error('Token exchange error:', tokenError);
+      res.send(`
+        <html>
+          <body>
+            <h1>Token Exchange Failed</h1>
+            <p>Error: ${tokenError.message}</p>
+            <script>window.close();</script>
+          </body>
+        </html>
+      `);
+    }
+  } catch (err) {
+    console.error('OAuth callback error:', err);
+    res.status(500).send(`
+      <html>
+        <body>
+          <h1>Server Error</h1>
+          <p>Error: ${err.message}</p>
+          <script>window.close();</script>
+        </body>
+      </html>
+    `);
+  }
+});
+
+// Google Calendar Authentication endpoints
+app.get('/calendar/auth-url', authenticate, async (req, res) => {
+  try {
+    const authUrl = calendarService.getAuthUrl();
+    res.json({ authUrl });
+  } catch (err) {
+    console.error('Auth URL error:', err);
+    res.status(500).json({ error: 'Failed to generate auth URL' });
+  }
+});
+
+app.post('/calendar/auth-callback', authenticate, async (req, res) => {
+  const { code } = req.body;
+  try {
+    const tokens = await calendarService.getAccessToken(code);
+    res.json({ success: true, message: 'Calendar connected successfully!' });
+  } catch (err) {
+    console.error('Auth callback error:', err);
+    res.status(500).json({ error: 'Failed to authenticate with Google Calendar' });
+  }
+});
+
+app.get('/calendar/auth-status', authenticate, async (req, res) => {
+  try {
+    const isAuthenticated = await calendarService.isAuthenticated();
+    res.json({ authenticated: isAuthenticated });
+  } catch (err) {
+    console.error('Auth status error:', err);
+    res.status(500).json({ error: 'Failed to check authentication status' });
+  }
+});
+
+app.get('/calendar/google-events', authenticate, async (req, res) => {
+  try {
+    if (!(await calendarService.isAuthenticated())) {
+      return res.status(401).json({ error: 'Google Calendar not connected' });
+    }
+    
+    const { timeMin, timeMax } = req.query;
+    const events = await calendarService.listEvents('primary', timeMin, timeMax);
+    res.json(events);
+  } catch (err) {
+    console.error('Google events error:', err);
+    res.status(500).json({ error: 'Failed to fetch Google Calendar events' });
+  }
+});
+
+app.post('/calendar/google-events', authenticate, async (req, res) => {
+  try {
+    if (!(await calendarService.isAuthenticated())) {
+      return res.status(401).json({ error: 'Google Calendar not connected' });
+    }
+    
+    const event = await calendarService.createEvent(req.body);
+    res.status(201).json(event);
+  } catch (err) {
+    console.error('Create Google event error:', err);
+    res.status(500).json({ error: 'Failed to create Google Calendar event' });
   }
 });
 
