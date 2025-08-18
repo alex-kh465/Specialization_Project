@@ -108,18 +108,27 @@ class MCPCalendarClient {
   }
 
   async ensureConnected() {
+    // Try to reconnect if not connected
     if (!this.isConnected) {
+      console.log('MCP Calendar client not connected, attempting to reconnect...');
       await this.connect();
     }
     
+    // If still not connected after attempt, return false instead of throwing
     if (!this.isConnected) {
-      throw new Error('Calendar service is currently unavailable. Please try again later.');
+      console.warn('MCP Calendar client connection failed, calendar operations will be unavailable');
+      return false;
     }
+    
+    return true;
   }
 
   // Calendar operations using the MCP server
   async listCalendars() {
-    await this.ensureConnected();
+    const connected = await this.ensureConnected();
+    if (!connected) {
+      throw new Error('Calendar service is currently unavailable. Please try again later.');
+    }
     
     try {
       const result = await this.client.callTool({
@@ -135,7 +144,10 @@ class MCPCalendarClient {
   }
 
   async listEvents(calendarId = 'primary', timeMin = null, timeMax = null, timeZone = 'Asia/Kolkata') {
-    await this.ensureConnected();
+    const connected = await this.ensureConnected();
+    if (!connected) {
+      throw new Error('Calendar service is currently unavailable. Please try again later.');
+    }
     
     try {
       const args = { calendarId };
@@ -157,18 +169,25 @@ class MCPCalendarClient {
   }
 
   async searchEvents(calendarId = 'primary', query, timeMin, timeMax, timeZone = 'Asia/Kolkata') {
-    await this.ensureConnected();
+    const connected = await this.ensureConnected();
+    if (!connected) {
+      throw new Error('Calendar service is currently unavailable. Please try again later.');
+    }
     
     try {
+      const args = {
+        calendarId,
+        query,
+        timeZone
+      };
+      
+      // Only add timeMin and timeMax if they are not null/undefined
+      if (timeMin) args.timeMin = timeMin;
+      if (timeMax) args.timeMax = timeMax;
+      
       const result = await this.client.callTool({
         name: 'search-events',
-        arguments: {
-          calendarId,
-          query,
-          timeMin,
-          timeMax,
-          timeZone
-        }
+        arguments: args
       });
       
       return this.parseToolResult(result);
@@ -179,7 +198,10 @@ class MCPCalendarClient {
   }
 
   async createEvent(eventData) {
-    await this.ensureConnected();
+    const connected = await this.ensureConnected();
+    if (!connected) {
+      throw new Error('Calendar service is currently unavailable. Please try again later.');
+    }
     
     try {
       const args = {
@@ -211,7 +233,10 @@ class MCPCalendarClient {
   }
 
   async updateEvent(eventData) {
-    await this.ensureConnected();
+    const connected = await this.ensureConnected();
+    if (!connected) {
+      throw new Error('Calendar service is currently unavailable. Please try again later.');
+    }
     
     try {
       const args = {
@@ -248,7 +273,10 @@ class MCPCalendarClient {
   }
 
   async deleteEvent(calendarId = 'primary', eventId, sendUpdates = 'all') {
-    await this.ensureConnected();
+    const connected = await this.ensureConnected();
+    if (!connected) {
+      throw new Error('Calendar service is currently unavailable. Please try again later.');
+    }
     
     try {
       const result = await this.client.callTool({
@@ -268,7 +296,10 @@ class MCPCalendarClient {
   }
 
   async getFreeBusy(calendars, timeMin, timeMax, timeZone = 'Asia/Kolkata') {
-    await this.ensureConnected();
+    const connected = await this.ensureConnected();
+    if (!connected) {
+      throw new Error('Calendar service is currently unavailable. Please try again later.');
+    }
     
     try {
       const result = await this.client.callTool({
@@ -289,7 +320,10 @@ class MCPCalendarClient {
   }
 
   async getCurrentTime(timeZone = null) {
-    await this.ensureConnected();
+    const connected = await this.ensureConnected();
+    if (!connected) {
+      throw new Error('Calendar service is currently unavailable. Please try again later.');
+    }
     
     try {
       const args = {};
@@ -308,7 +342,10 @@ class MCPCalendarClient {
   }
 
   async listColors() {
-    await this.ensureConnected();
+    const connected = await this.ensureConnected();
+    if (!connected) {
+      throw new Error('Calendar service is currently unavailable. Please try again later.');
+    }
     
     try {
       const result = await this.client.callTool({

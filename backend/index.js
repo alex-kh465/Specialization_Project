@@ -430,10 +430,84 @@ For non-calendar requests, respond normally as an academic assistant.`
     const aiResponse = data.choices?.[0]?.message?.content || 'No response from AI.';
     
     // Check if response contains calendar operation JSON
+    console.log('AI Response:', aiResponse);
+    
     try {
-      const jsonMatch = aiResponse.match(/\{[\s\S]*"type"\s*:\s*"calendar_[\s\S]*?\}/);
+      // Try multiple patterns to extract calendar operations
+      let jsonMatch = null;
+      let operationData = null;
+      
+      // More robust JSON extraction using balanced bracket matching
+      const extractCompleteJSON = (text) => {
+        const startIndex = text.indexOf('{');
+        if (startIndex === -1) return null;
+        
+        let bracketCount = 0;
+        let inString = false;
+        let escaped = false;
+        
+        for (let i = startIndex; i < text.length; i++) {
+          const char = text[i];
+          
+          if (escaped) {
+            escaped = false;
+            continue;
+          }
+          
+          if (char === '\\') {
+            escaped = true;
+            continue;
+          }
+          
+          if (char === '"' && !escaped) {
+            inString = !inString;
+            continue;
+          }
+          
+          if (!inString) {
+            if (char === '{') {
+              bracketCount++;
+            } else if (char === '}') {
+              bracketCount--;
+              if (bracketCount === 0) {
+                return text.substring(startIndex, i + 1);
+              }
+            }
+          }
+        }
+        return null;
+      };
+      
+      // Try to extract complete JSON
+      const extractedJson = extractCompleteJSON(aiResponse);
+      if (extractedJson) {
+        jsonMatch = [extractedJson];
+      }
+      
       if (jsonMatch) {
-        const operationData = JSON.parse(jsonMatch[0]);
+        console.log('Found JSON match:', jsonMatch[0]);
+        
+        try {
+          operationData = JSON.parse(jsonMatch[0]);
+        } catch (parseErr) {
+          console.log('JSON parse failed, trying to clean:', parseErr.message);
+          // Try to clean up common issues
+          let cleanedJson = jsonMatch[0]
+            .replace(/(["'])?([a-zA-Z_][a-zA-Z0-9_]*)(["'])?:/g, '"$2":') // Fix unquoted keys
+            .replace(/'/g, '"') // Replace single quotes with double quotes
+            .replace(/,\s*}/g, '}') // Remove trailing commas
+            .replace(/,\s*]/g, ']'); // Remove trailing commas in arrays
+          
+          try {
+            operationData = JSON.parse(cleanedJson);
+            console.log('Successfully parsed cleaned JSON');
+          } catch (cleanErr) {
+            console.log('Even cleaned JSON failed to parse:', cleanErr.message);
+          }
+        }
+      }
+      
+      if (operationData && operationData.type && operationData.type.startsWith('calendar_')) {
         console.log('Calendar operation detected:', operationData);
         
         let calendarResult = null;
@@ -490,11 +564,17 @@ For non-calendar requests, respond normally as an academic assistant.`
             case 'calendar_update':
               // First search for the event to update
               const updateParams = operationData.params || {};
+              
+              // Set default time range for today if not specified
+              const today = new Date();
+              const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate()).toISOString();
+              const todayEnd = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1).toISOString();
+              
               const searchResult = await mcpCalendarClient.searchEvents(
                 'primary',
                 updateParams.searchQuery,
-                null,
-                null,
+                updateParams.timeMin || todayStart,
+                updateParams.timeMax || todayEnd,
                 'Asia/Kolkata'
               );
               const foundEvents = searchResult?.events || [];
@@ -518,11 +598,17 @@ For non-calendar requests, respond normally as an academic assistant.`
             case 'calendar_delete':
               // First search for the event to delete
               const deleteParams = operationData.params || {};
+              
+              // Set default time range for today if not specified
+              const deleteToday = new Date();
+              const deleteTodayStart = new Date(deleteToday.getFullYear(), deleteToday.getMonth(), deleteToday.getDate()).toISOString();
+              const deleteTodayEnd = new Date(deleteToday.getFullYear(), deleteToday.getMonth(), deleteToday.getDate() + 1).toISOString();
+              
               const deleteSearchResult = await mcpCalendarClient.searchEvents(
                 'primary',
                 deleteParams.searchQuery,
-                null,
-                null,
+                deleteParams.timeMin || deleteTodayStart,
+                deleteParams.timeMax || deleteTodayEnd,
                 'Asia/Kolkata'
               );
               const eventsToDelete = deleteSearchResult?.events || [];
@@ -929,6 +1015,50 @@ app.get('/calendar/mcp/status', authenticate, async (req, res) => {
   });
 });
 
+// Trigger calendar authentication setup
+app.post('/calendar/mcp/setup-auth', authenticate, async (req, res) => {
+  try {
+    console.log('Starting calendar authentication setup...');
+    
+    // Try to connect to MCP server which will trigger authentication if needed
+    await mcpCalendarClient.connect();
+    
+    if (mcpCalendarClient.isConnected) {
+      // Try to list calendars to verify authentication
+      try {
+        const calendars = await mcpCalendarClient.listCalendars();
+        res.json({
+          success: true,
+          message: 'Calendar authentication completed successfully',
+          calendars: calendars
+        });
+      } catch (authError) {
+        res.json({
+          success: false,
+          message: 'MCP server connected but authentication required',
+          error: authError.message,
+          setupRequired: true
+        });
+      }
+    } else {
+      res.status(503).json({
+        success: false,
+        message: 'Failed to connect to MCP Calendar server',
+        setupRequired: true,
+        instructions: 'Please ensure the MCP server is properly built and OAuth credentials are configured.'
+      });
+    }
+  } catch (error) {
+    console.error('Calendar setup error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Calendar setup failed',
+      error: error.message,
+      setupRequired: true
+    });
+  }
+});
+
 // Test calendar creation endpoint
 app.post('/calendar/mcp/test-create', authenticate, async (req, res) => {
   try {
@@ -951,6 +1081,152 @@ app.post('/calendar/mcp/test-create', authenticate, async (req, res) => {
   } catch (err) {
     console.error('Test create event error:', err);
     res.status(500).json({ error: 'Test create failed: ' + err.message, details: err });
+  }
+});
+
+// Debug endpoint to test AI responses without calling actual AI
+app.post('/ai/debug-calendar', authenticate, async (req, res) => {
+  const { message } = req.body;
+  console.log('Debug chat message:', message);
+  
+  try {
+    // Simulate different AI responses based on input
+    let simulatedResponse = '';
+    
+    if (message.toLowerCase().includes('schedule') || message.toLowerCase().includes('create event')) {
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      tomorrow.setHours(15, 0, 0, 0); // 3 PM
+      const endTime = new Date(tomorrow);
+      endTime.setHours(16, 0, 0, 0); // 4 PM
+      
+      simulatedResponse = JSON.stringify({
+        "type": "calendar_create",
+        "event": {
+          "title": "Study Session",
+          "description": "AI scheduled study session",
+          "start": tomorrow.toISOString().slice(0, 19),
+          "end": endTime.toISOString().slice(0, 19),
+          "location": "",
+          "attendees": []
+        },
+        "message": "Creating your study session..."
+      });
+    } else if (message.toLowerCase().includes('events today') || message.toLowerCase().includes('what are my events')) {
+      simulatedResponse = JSON.stringify({
+        "type": "calendar_list",
+        "params": {
+          "calendarId": "primary"
+        },
+        "message": "Let me check your calendar..."
+      });
+    } else {
+      simulatedResponse = "I understand you want to work with your calendar. For debugging: try 'schedule a meeting tomorrow' or 'what are my events today'";
+    }
+    
+    console.log('Simulated AI response:', simulatedResponse);
+    
+    // Process the simulated response using the same logic as the real AI endpoint
+    if (simulatedResponse.includes('"type"') && simulatedResponse.includes('calendar_')) {
+      try {
+        // Use the same robust JSON extraction logic
+        const extractCompleteJSON = (text) => {
+          const startIndex = text.indexOf('{');
+          if (startIndex === -1) return null;
+          
+          let bracketCount = 0;
+          let inString = false;
+          let escaped = false;
+          
+          for (let i = startIndex; i < text.length; i++) {
+            const char = text[i];
+            
+            if (escaped) {
+              escaped = false;
+              continue;
+            }
+            
+            if (char === '\\') {
+              escaped = true;
+              continue;
+            }
+            
+            if (char === '"' && !escaped) {
+              inString = !inString;
+              continue;
+            }
+            
+            if (!inString) {
+              if (char === '{') {
+                bracketCount++;
+              } else if (char === '}') {
+                bracketCount--;
+                if (bracketCount === 0) {
+                  return text.substring(startIndex, i + 1);
+                }
+              }
+            }
+          }
+          return null;
+        };
+        
+        const extractedJson = extractCompleteJSON(simulatedResponse);
+        const operationData = JSON.parse(extractedJson || simulatedResponse);
+        console.log('Debug: Calendar operation detected:', operationData);
+        
+        let calendarResult = null;
+        let responseMessage = operationData.message || 'Processing your calendar request...';
+        
+        // Execute the calendar operation
+        switch (operationData.type) {
+          case 'calendar_create':
+            calendarResult = await mcpCalendarClient.createEvent(operationData.event);
+            const startDate = new Date(operationData.event.start);
+            const endDate = new Date(operationData.event.end);
+            responseMessage = calendarResult ? 
+              `✅ **Debug Event created successfully!**\n\n📅 **${operationData.event.title}**\n📍 ${operationData.event.location || 'No location specified'}\n🕐 ${startDate.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} - ${endDate.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })}\n\n${operationData.event.description ? '📝 ' + operationData.event.description : ''}` :
+              `❌ Failed to create debug event. ${operationData.message}`;
+            break;
+            
+          case 'calendar_list':
+            const listParams = operationData.params || {};
+            calendarResult = await mcpCalendarClient.listEvents(
+              listParams.calendarId || 'primary',
+              listParams.timeMin,
+              listParams.timeMax,
+              'Asia/Kolkata'
+            );
+            const events = calendarResult?.events || [];
+            responseMessage = events.length > 0 ? 
+              `📅 **Debug: Found ${events.length} event(s):**\n\n` + 
+              events.slice(0, 10).map(event => {
+                const start = new Date(event.start?.dateTime || event.start?.date);
+                return `• **${event.summary || 'Untitled Event'}**\n  🕐 ${start.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}${event.location ? '\n  📍 ' + event.location : ''}`;
+              }).join('\n\n') :
+              `📅 **Debug: No events found** for the specified time period.`;
+            break;
+        }
+        
+        res.json({ 
+          response: responseMessage,
+          calendarOperation: operationData.type,
+          calendarResult: !!calendarResult,
+          debug: true
+        });
+        return;
+      } catch (parseError) {
+        console.log('Debug: JSON parse error:', parseError);
+      }
+    }
+    
+    res.json({ 
+      response: simulatedResponse,
+      debug: true 
+    });
+    
+  } catch (err) {
+    console.error('Debug chat error:', err);
+    res.status(500).json({ error: 'Debug chat failed: ' + err.message });
   }
 });
 

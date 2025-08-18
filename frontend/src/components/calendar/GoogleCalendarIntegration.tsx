@@ -6,8 +6,30 @@ import { useToast } from '@/hooks/use-toast';
 const API_URL = 'http://localhost:4000';
 const getToken = () => (typeof window !== 'undefined' ? localStorage.getItem('token') : '');
 
+// Storage keys for persistent state
+const CALENDAR_CONNECTION_KEY = 'google_calendar_connected';
+const CALENDAR_CONNECTION_TIMESTAMP_KEY = 'google_calendar_connected_timestamp';
+const CONNECTION_CACHE_DURATION = 5 * 60 * 1000; // 5 minutes cache
+
 const GoogleCalendarIntegration: React.FC = () => {
-  const [isConnected, setIsConnected] = useState(false);
+  const [isConnected, setIsConnected] = useState(() => {
+    // Initialize from localStorage if available
+    if (typeof window !== 'undefined') {
+      const cached = localStorage.getItem(CALENDAR_CONNECTION_KEY);
+      const timestamp = localStorage.getItem(CALENDAR_CONNECTION_TIMESTAMP_KEY);
+      
+      if (cached && timestamp) {
+        const cacheTime = parseInt(timestamp, 10);
+        const now = Date.now();
+        
+        // Use cached value if it's still valid
+        if (now - cacheTime < CONNECTION_CACHE_DURATION) {
+          return cached === 'true';
+        }
+      }
+    }
+    return false;
+  });
   const [isConnecting, setIsConnecting] = useState(false);
   const [loading, setLoading] = useState(true);
   const { toast } = useToast();
@@ -17,9 +39,20 @@ const GoogleCalendarIntegration: React.FC = () => {
     checkAuthStatus();
   }, []);
 
+  // Helper function to update connection state with persistence
+  const updateConnectionState = (connected: boolean) => {
+    setIsConnected(connected);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(CALENDAR_CONNECTION_KEY, connected.toString());
+      localStorage.setItem(CALENDAR_CONNECTION_TIMESTAMP_KEY, Date.now().toString());
+    }
+  };
+
   const checkAuthStatus = async () => {
     try {
       const token = getToken();
+      console.log('Checking auth status...');
+      
       // Try to fetch calendars to check if MCP Calendar is working
       const response = await fetch(`${API_URL}/calendar/mcp/calendars`, {
         headers: {
@@ -27,15 +60,35 @@ const GoogleCalendarIntegration: React.FC = () => {
         },
       });
       
+      console.log('Calendar check response status:', response.status);
+      
       if (response.ok) {
         const data = await response.json();
-        setIsConnected(data.items && data.items.length > 0);
+        console.log('Calendar data received:', data);
+        
+        // Check for different possible response formats
+        const connected = (data && data.items && data.items.length > 0) || 
+                         (data && data.calendars && data.calendars.length > 0) ||
+                         (Array.isArray(data) && data.length > 0) ||
+                         (data && typeof data === 'object' && Object.keys(data).length > 0);
+        
+        console.log('Connection status determined:', connected);
+        
+        if (connected) {
+          updateConnectionState(true);
+          console.log('Calendar connection confirmed - updating UI state');
+        } else {
+          console.log('No calendars found, treating as disconnected');
+          updateConnectionState(false);
+        }
       } else {
-        setIsConnected(false);
+        const errorData = await response.json().catch(() => ({}));
+        console.log('Calendar check failed:', errorData);
+        updateConnectionState(false);
       }
     } catch (error) {
       console.error('Error checking MCP auth status:', error);
-      setIsConnected(false);
+      updateConnectionState(false);
     } finally {
       setLoading(false);
     }
@@ -44,87 +97,90 @@ const GoogleCalendarIntegration: React.FC = () => {
   const handleConnect = async () => {
     setIsConnecting(true);
     try {
-      // For MCP Calendar, we'll trigger a simple calendar fetch which should trigger OAuth flow
-      toast({
-        title: "Connecting to Google Calendar",
-        description: "This will trigger the MCP server OAuth flow. Please check your terminal/console.",
-      });
-      
-      // Try to fetch calendars - this will trigger MCP OAuth flow if not authenticated
       const token = getToken();
-      const response = await fetch(`${API_URL}/calendar/mcp/calendars`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
+      
+      // Use the new setup-auth endpoint
+      toast({
+        title: "Setting up Calendar",
+        description: "Starting the calendar authentication process. This may take a moment...",
       });
       
-      if (response.ok) {
-        setIsConnected(true);
+      const setupResponse = await fetch(`${API_URL}/calendar/mcp/setup-auth`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      
+      const setupData = await setupResponse.json();
+      
+      if (setupResponse.ok && setupData.success) {
+        // Authentication successful
+        console.log('Setup successful, calendars data:', setupData.calendars);
+        const connected = setupData.calendars && (setupData.calendars.items || setupData.calendars.calendars);
+        updateConnectionState(!!connected);
+        
+        // Force an immediate UI update and then verify with server
         toast({
           title: "🎉 Calendar Connected!",
-          description: "Your Google Calendar is now connected via MCP server!",
+          description: "Your Google Calendar is now connected and ready to use!",
           duration: 5000,
         });
+        
+        // Re-check status after a short delay to ensure UI updates
+        setTimeout(async () => {
+          console.log('Performing delayed auth status check...');
+          await checkAuthStatus();
+        }, 1500);
       } else {
-        throw new Error('MCP Calendar connection failed');
-      }
-
-      // Listen for messages from the popup window
-      const messageListener = (event: MessageEvent) => {
-        if (event.data?.type === 'GOOGLE_AUTH_SUCCESS') {
-          // Authentication successful
-          setIsConnected(true);
-          setIsConnecting(false);
-          if (popup) {
-            popup.close();
-          }
-          
+        // Authentication required or failed
+        updateConnectionState(false);
+        
+        if (setupData.setupRequired) {
           toast({
-            title: "🎉 Calendar Connected!",
-            description: "Your Google Calendar is now connected. You can create events through AI chat!",
-            duration: 5000,
+            title: "Calendar Setup Required",
+            description: setupData.message || "Please complete the authentication process. Check your terminal for the authentication URL.",
+            variant: "destructive",
           });
-          
-          // Remove the event listener
-          window.removeEventListener('message', messageListener);
+        } else {
+          toast({
+            title: "Setup Failed",
+            description: setupData.message || "Failed to set up calendar integration.",
+            variant: "destructive",
+          });
         }
-      };
-      
-      // Add message listener
-      window.addEventListener('message', messageListener);
-      
-      // Also listen for popup close (in case user closes manually)
-      const checkClosed = setInterval(async () => {
-        if (popup?.closed) {
-          clearInterval(checkClosed);
-          setIsConnecting(false);
-          window.removeEventListener('message', messageListener);
-          
-          // Check if authentication was successful even if popup was closed
-          setTimeout(async () => {
-            await checkAuthStatus();
-          }, 1000);
-        }
-      }, 1000);
-
+      }
     } catch (error: any) {
       console.error('Error connecting calendar:', error);
+      updateConnectionState(false);
+      
       toast({
         title: "Connection Failed",
-        description: error.message || "Failed to connect to Google Calendar",
+        description: error.message || "Failed to connect to Google Calendar. Please check your setup and try again.",
         variant: "destructive",
       });
+    } finally {
       setIsConnecting(false);
     }
   };
 
-  const handleDisconnect = () => {
-    // In a real implementation, you would call an API endpoint to revoke tokens
-    setIsConnected(false);
-    toast({
-      title: "Calendar Disconnected",
-      description: "Your Google Calendar has been disconnected.",
-    });
+  const handleDisconnect = async () => {
+    try {
+      // Clear persistent state
+      updateConnectionState(false);
+      
+      // In a real implementation, you would call an API endpoint to revoke tokens
+      // For now, we'll just clear the local state
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem(CALENDAR_CONNECTION_KEY);
+        localStorage.removeItem(CALENDAR_CONNECTION_TIMESTAMP_KEY);
+      }
+      
+      toast({
+        title: "Calendar Disconnected",
+        description: "Your Google Calendar has been disconnected.",
+      });
+    } catch (error) {
+      console.error('Error disconnecting calendar:', error);
+    }
   };
 
   if (loading) {
