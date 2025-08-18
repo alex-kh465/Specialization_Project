@@ -5,7 +5,7 @@ import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
 import fetch from 'node-fetch';
 import * as chrono from 'chrono-node';
-import GoogleCalendarService from './calendar-service.js';
+import mcpCalendarClient from './mcp-calendar-client.js';
 
 
 // Load environment variables
@@ -21,8 +21,15 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// Google Calendar Service
-const calendarService = new GoogleCalendarService();
+// MCP Calendar Client (using the existing google-calendar-mcp server)
+console.log('MCP Calendar client initializing...');
+
+// Initialize MCP client connection on startup
+mcpCalendarClient.connect().then(() => {
+  console.log('MCP Calendar client connection established');
+}).catch((error) => {
+  console.log('MCP Calendar client connection failed, will retry on demand:', error.message);
+});
 
 // Middleware to extract user_id from Authorization header (JWT)
 function authenticate(req, res, next) {
@@ -286,44 +293,119 @@ app.post('/auth/google-callback', async (req, res) => {
   }
 });
 
-// AI Chat endpoint with Calendar Integration (Groq integration)
+// AI Chat endpoint with Enhanced Calendar Integration (Groq integration)
 app.post('/ai/chat', authenticate, async (req, res) => {
   const { message } = req.body;
   console.log('Received message:', message);
   if (!message) return res.status(400).json({ error: 'Message is required' });
   
   try {
-    // Enhanced system prompt for calendar scheduling
+    // Enhanced system prompt for full calendar capabilities
     const systemPrompt = `You are GenEWA's AI assistant, specializing in helping Indian college students with academics and productivity.
 
-SPECIAL CAPABILITY: Calendar Event Creation
-When users request to schedule meetings, events, or set reminders, extract the following information and respond with a JSON object in this exact format:
+IMPORTANT: Only use JSON format for actual calendar operations. For general questions, greetings, or academic help, respond normally in plain text.
 
+CALENDAR INTEGRATION CAPABILITIES:
+You have full access to Google Calendar operations. ONLY for calendar-related requests (scheduling, viewing events, etc.), extract the operation and parameters, then respond with JSON in this exact format:
+
+1. CREATE EVENT:
 {
-  "type": "calendar_event",
+  "type": "calendar_create",
   "event": {
-    "title": "extracted event title",
-    "description": "extracted description or purpose",
+    "title": "event title",
+    "description": "description",
     "start": "YYYY-MM-DDTHH:MM:SS",
     "end": "YYYY-MM-DDTHH:MM:SS",
-    "location": "extracted location (if mentioned)",
-    "attendees": ["email1@example.com", "email2@example.com"]
+    "location": "location",
+    "attendees": ["email@example.com"]
   },
-  "message": "I'll help you schedule that! Creating the event now..."
+  "message": "Creating your event..."
 }
 
-For date/time parsing:
-- Use current date as reference: ${new Date().toISOString()}
+2. LIST/VIEW EVENTS:
+{
+  "type": "calendar_list",
+  "params": {
+    "timeMin": "YYYY-MM-DDTHH:MM:SS" (optional),
+    "timeMax": "YYYY-MM-DDTHH:MM:SS" (optional),
+    "calendarId": "primary" (default)
+  },
+  "message": "Let me check your calendar..."
+}
+
+3. SEARCH EVENTS:
+{
+  "type": "calendar_search",
+  "params": {
+    "query": "search term",
+    "timeMin": "YYYY-MM-DDTHH:MM:SS" (optional),
+    "timeMax": "YYYY-MM-DDTHH:MM:SS" (optional)
+  },
+  "message": "Searching your calendar..."
+}
+
+4. UPDATE EVENT:
+{
+  "type": "calendar_update",
+  "params": {
+    "searchQuery": "event to find and update",
+    "updates": {
+      "title": "new title",
+      "start": "new time",
+      "description": "new description"
+    }
+  },
+  "message": "Updating your event..."
+}
+
+5. DELETE EVENT:
+{
+  "type": "calendar_delete",
+  "params": {
+    "searchQuery": "event to delete"
+  },
+  "message": "Deleting the event..."
+}
+
+6. CHECK AVAILABILITY:
+{
+  "type": "calendar_availability",
+  "params": {
+    "timeMin": "YYYY-MM-DDTHH:MM:SS",
+    "timeMax": "YYYY-MM-DDTHH:MM:SS",
+    "duration": 60
+  },
+  "message": "Checking your availability..."
+}
+
+7. LIST CALENDARS:
+{
+  "type": "calendar_calendars",
+  "message": "Getting your calendars..."
+}
+
+Current date/time reference: ${new Date().toISOString()}
+Default timezone: Asia/Kolkata
+
+Examples:
+- "What are my events today?" → calendar_list
+- "Find my meeting with John" → calendar_search
+- "Schedule a study session tomorrow at 3pm" → calendar_create
+- "Change my 6pm meeting to 7pm" → calendar_update
+- "Cancel my evening meeting" → calendar_delete
+- "When am I free tomorrow?" → calendar_availability
+- "Show my calendars" → calendar_calendars
+
+IMPORTANT: For event creation requests:
+- If user gives basic details (title, time), create the event immediately with reasonable defaults
 - Default duration: 1 hour if not specified
-- Indian timezone: Use IST (Asia/Kolkata)
-- Handle natural language like "tomorrow at 2pm", "next Friday", "in 2 hours"
+- Default location: empty if not specified  
+- Default description: empty if not specified
+- For "today at 6pm", use today's date with 18:00 time
+- For "tomorrow at 3pm", use tomorrow's date with 15:00 time
+- Always create the event rather than asking for more details
 
-For non-scheduling requests, respond normally as an academic assistant.
-
-Examples of scheduling requests:
-- "Schedule a meeting with my study group tomorrow at 3pm"
-- "Remind me to submit my assignment on Friday"
-- "Set up a lecture review session next week"`;
+For non-calendar requests, respond normally as an academic assistant.`
 
     const groqRes = await fetch(process.env.GROQ_API_URL, {
       method: 'POST',
@@ -347,44 +429,186 @@ Examples of scheduling requests:
     
     const aiResponse = data.choices?.[0]?.message?.content || 'No response from AI.';
     
-    // Check if response contains calendar event JSON
+    // Check if response contains calendar operation JSON
     try {
-      const jsonMatch = aiResponse.match(/\{[\s\S]*"type"\s*:\s*"calendar_event"[\s\S]*\}/);
+      const jsonMatch = aiResponse.match(/\{[\s\S]*"type"\s*:\s*"calendar_[\s\S]*?\}/);
       if (jsonMatch) {
-        const eventData = JSON.parse(jsonMatch[0]);
+        const operationData = JSON.parse(jsonMatch[0]);
+        console.log('Calendar operation detected:', operationData);
         
-        // Create the calendar event if Google Calendar is authenticated
         let calendarResult = null;
-        if (await calendarService.isAuthenticated()) {
-          try {
-            calendarResult = await calendarService.createEvent(eventData.event);
-          } catch (calError) {
-            console.error('Calendar creation error:', calError);
-            // Continue without calendar creation
+        let responseMessage = operationData.message || 'Processing your calendar request...';
+        
+        try {
+          switch (operationData.type) {
+            case 'calendar_create':
+              calendarResult = await mcpCalendarClient.createEvent(operationData.event);
+              const startDate = new Date(operationData.event.start);
+              const endDate = new Date(operationData.event.end);
+              responseMessage = calendarResult ? 
+                `✅ **Event created successfully!**\n\n📅 **${operationData.event.title}**\n📍 ${operationData.event.location || 'No location specified'}\n🕐 ${startDate.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} - ${endDate.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })}\n\n${operationData.event.description ? '📝 ' + operationData.event.description : ''}` :
+                `❌ Failed to create event. ${operationData.message}`;
+              break;
+              
+            case 'calendar_list':
+              const listParams = operationData.params || {};
+              calendarResult = await mcpCalendarClient.listEvents(
+                listParams.calendarId || 'primary',
+                listParams.timeMin,
+                listParams.timeMax,
+                'Asia/Kolkata'
+              );
+              const events = calendarResult?.events || [];
+              responseMessage = events.length > 0 ? 
+                `📅 **Found ${events.length} event(s):**\n\n` + 
+                events.slice(0, 10).map(event => {
+                  const start = new Date(event.start?.dateTime || event.start?.date);
+                  return `• **${event.summary || 'Untitled Event'}**\n  🕐 ${start.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}${event.location ? '\n  📍 ' + event.location : ''}`;
+                }).join('\n\n') :
+                `📅 **No events found** for the specified time period.`;
+              break;
+              
+            case 'calendar_search':
+              const searchParams = operationData.params || {};
+              calendarResult = await mcpCalendarClient.searchEvents(
+                'primary',
+                searchParams.query,
+                searchParams.timeMin,
+                searchParams.timeMax,
+                'Asia/Kolkata'
+              );
+              const searchEvents = calendarResult?.events || [];
+              responseMessage = searchEvents.length > 0 ? 
+                `🔍 **Found ${searchEvents.length} event(s) matching "${searchParams.query}":**\n\n` + 
+                searchEvents.slice(0, 5).map(event => {
+                  const start = new Date(event.start?.dateTime || event.start?.date);
+                  return `• **${event.summary || 'Untitled Event'}**\n  🕐 ${start.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}${event.location ? '\n  📍 ' + event.location : ''}`;
+                }).join('\n\n') :
+                `🔍 **No events found** matching "${searchParams.query}".`;
+              break;
+              
+            case 'calendar_update':
+              // First search for the event to update
+              const updateParams = operationData.params || {};
+              const searchResult = await mcpCalendarClient.searchEvents(
+                'primary',
+                updateParams.searchQuery,
+                null,
+                null,
+                'Asia/Kolkata'
+              );
+              const foundEvents = searchResult?.events || [];
+              
+              if (foundEvents.length > 0) {
+                const eventToUpdate = foundEvents[0];
+                const updateData = {
+                  eventId: eventToUpdate.id,
+                  calendarId: 'primary',
+                  ...updateParams.updates
+                };
+                calendarResult = await mcpCalendarClient.updateEvent(updateData);
+                responseMessage = calendarResult ? 
+                  `✅ **Event updated successfully!**\n\n📅 **${calendarResult.summary || eventToUpdate.summary}**\n🔄 Changes applied` :
+                  `❌ Failed to update event.`;
+              } else {
+                responseMessage = `❌ **Event not found** matching "${updateParams.searchQuery}".`;
+              }
+              break;
+              
+            case 'calendar_delete':
+              // First search for the event to delete
+              const deleteParams = operationData.params || {};
+              const deleteSearchResult = await mcpCalendarClient.searchEvents(
+                'primary',
+                deleteParams.searchQuery,
+                null,
+                null,
+                'Asia/Kolkata'
+              );
+              const eventsToDelete = deleteSearchResult?.events || [];
+              
+              if (eventsToDelete.length > 0) {
+                const eventToDelete = eventsToDelete[0];
+                calendarResult = await mcpCalendarClient.deleteEvent(
+                  'primary',
+                  eventToDelete.id,
+                  'all'
+                );
+                responseMessage = `✅ **Event deleted successfully!**\n\n📅 **${eventToDelete.summary}** has been removed from your calendar.`;
+              } else {
+                responseMessage = `❌ **Event not found** matching "${deleteParams.searchQuery}".`;
+              }
+              break;
+              
+            case 'calendar_availability':
+              const availParams = operationData.params || {};
+              const availabilityResult = await mcpCalendarClient.getFreeBusy(
+                ['primary'],
+                availParams.timeMin,
+                availParams.timeMax,
+                'Asia/Kolkata'
+              );
+              
+              // Process availability data
+              const busyTimes = availabilityResult?.calendars?.primary?.busy || [];
+              responseMessage = busyTimes.length > 0 ? 
+                `📅 **Availability Check:**\n\n🔴 **Busy times:**\n` + 
+                busyTimes.map(busy => {
+                  const start = new Date(busy.start);
+                  const end = new Date(busy.end);
+                  return `• ${start.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} - ${end.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })}`;
+                }).join('\n') :
+                `✅ **You're completely free** during the requested time period!`;
+              break;
+              
+            case 'calendar_calendars':
+              calendarResult = await mcpCalendarClient.listCalendars();
+              const calendars = calendarResult?.calendars || [];
+              responseMessage = calendars.length > 0 ? 
+                `📅 **Your calendars:**\n\n` + 
+                calendars.map(cal => {
+                  return `• **${cal.summary}**${cal.primary ? ' (Primary)' : ''}\n  📧 ${cal.id}`;
+                }).join('\n\n') :
+                `📅 **No calendars found**.`;
+              break;
+              
+            default:
+              responseMessage = `❌ Unknown calendar operation: ${operationData.type}`;
           }
+        } catch (calError) {
+          console.error('MCP Calendar operation error:', calError);
+          responseMessage = `❌ **Calendar operation failed:** ${calError.message}`;
         }
-        
-        // Parse dates for better formatting
-        const startDate = new Date(eventData.event.start);
-        const endDate = new Date(eventData.event.end);
-        
-        const responseMessage = calendarResult ? 
-          `✅ **Event scheduled successfully!**\n\n📅 **${eventData.event.title}**\n📍 ${eventData.event.location || 'No location specified'}\n🕐 ${startDate.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} - ${endDate.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })}\n\n${eventData.event.description ? '📝 ' + eventData.event.description : ''}\n\nThe event has been added to your Google Calendar. You'll receive notifications as configured.` :
-          `📅 **Event details extracted:**\n\n**${eventData.event.title}**\n🕐 ${startDate.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} - ${endDate.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })}\n📍 ${eventData.event.location || 'No location specified'}\n\n${eventData.event.description ? '📝 ' + eventData.event.description + '\n\n' : ''}⚠️ To automatically add this to your Google Calendar, please connect your Google account in the Calendar section.`;
         
         res.json({ 
           response: responseMessage,
-          calendarEvent: eventData.event,
-          calendarCreated: !!calendarResult
+          calendarOperation: operationData.type,
+          calendarResult: !!calendarResult
         });
         return;
       }
     } catch (parseError) {
-      console.log('No calendar event detected, continuing with normal response');
+      console.log('No calendar operation detected, continuing with normal response');
+      // Check if the AI response itself is JSON-like and needs to be handled
+      if (aiResponse.includes('"type":') && aiResponse.includes('calendar_')) {
+        // If it looks like a calendar operation but failed to parse, return a user-friendly message
+        res.json({ response: "I understand you want to work with your calendar. Let me help you with that. Can you please rephrase your request?" });
+        return;
+      }
     }
     
-    // Regular AI response
-    res.json({ response: aiResponse });
+    // Regular AI response - clean up any JSON artifacts
+    let cleanResponse = aiResponse;
+    // Remove any remaining JSON artifacts that might be in the response
+    cleanResponse = cleanResponse.replace(/\{[\s\S]*"type"\s*:\s*"calendar_[\s\S]*?\}/g, '');
+    cleanResponse = cleanResponse.trim();
+    
+    // If response is empty after cleaning, provide a default response
+    if (!cleanResponse) {
+      cleanResponse = "I'm here to help! You can ask me about your schedule, create events, or ask any academic questions.";
+    }
+    
+    res.json({ response: cleanResponse });
   } catch (err) {
     console.error('Groq API error:', err);
     res.status(500).json({ error: 'Failed to connect to Groq API' });
@@ -690,64 +914,279 @@ app.get('/oauth2callback', async (req, res) => {
   }
 });
 
-// Google Calendar Authentication endpoints
-app.get('/calendar/auth-url', authenticate, async (req, res) => {
-  try {
-    const authUrl = calendarService.getAuthUrl();
-    res.json({ authUrl });
-  } catch (err) {
-    console.error('Auth URL error:', err);
-    res.status(500).json({ error: 'Failed to generate auth URL' });
-  }
+// =================================
+// MCP GOOGLE CALENDAR ENDPOINTS
+// Using the existing google-calendar-mcp server
+// =================================
+
+// Check calendar setup status
+app.get('/calendar/mcp/status', authenticate, async (req, res) => {
+  res.json({
+    mcpConnected: mcpCalendarClient.isConnected,
+    serverPath: mcpCalendarClient.mcpServerPath,
+    credentialsPath: mcpCalendarClient.credentialsPath,
+    setupInstructions: 'To set up calendar integration, please configure Google Calendar OAuth credentials as described in the documentation.'
+  });
 });
 
-app.post('/calendar/auth-callback', authenticate, async (req, res) => {
-  const { code } = req.body;
+// Test calendar creation endpoint
+app.post('/calendar/mcp/test-create', authenticate, async (req, res) => {
   try {
-    const tokens = await calendarService.getAccessToken(code);
-    res.json({ success: true, message: 'Calendar connected successfully!' });
-  } catch (err) {
-    console.error('Auth callback error:', err);
-    res.status(500).json({ error: 'Failed to authenticate with Google Calendar' });
-  }
-});
-
-app.get('/calendar/auth-status', authenticate, async (req, res) => {
-  try {
-    const isAuthenticated = await calendarService.isAuthenticated();
-    res.json({ authenticated: isAuthenticated });
-  } catch (err) {
-    console.error('Auth status error:', err);
-    res.status(500).json({ error: 'Failed to check authentication status' });
-  }
-});
-
-app.get('/calendar/google-events', authenticate, async (req, res) => {
-  try {
-    if (!(await calendarService.isAuthenticated())) {
-      return res.status(401).json({ error: 'Google Calendar not connected' });
-    }
+    const testEvent = {
+      title: 'Test Chill Session',
+      description: 'A test event created by the API',
+      start: new Date(Date.now() + 60 * 60 * 1000).toISOString(), // 1 hour from now
+      end: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString() // 2 hours from now
+    };
     
-    const { timeMin, timeMax } = req.query;
-    const events = await calendarService.listEvents('primary', timeMin, timeMax);
+    console.log('Creating test event:', testEvent);
+    const result = await mcpCalendarClient.createEvent(testEvent);
+    console.log('Test event result:', result);
+    
+    res.json({
+      success: true,
+      event: testEvent,
+      result: result
+    });
+  } catch (err) {
+    console.error('Test create event error:', err);
+    res.status(500).json({ error: 'Test create failed: ' + err.message, details: err });
+  }
+});
+
+// List all calendars
+app.get('/calendar/mcp/calendars', authenticate, async (req, res) => {
+  try {
+    const calendars = await mcpCalendarClient.listCalendars();
+    res.json(calendars);
+  } catch (err) {
+    console.error('MCP list calendars error:', err);
+    if (err.message.includes('Calendar service is currently unavailable')) {
+      res.status(503).json({ 
+        error: 'Calendar integration is not set up. Please configure Google Calendar OAuth credentials.',
+        setupRequired: true,
+        instructions: 'Follow the setup guide to create Desktop app OAuth credentials and run authentication.'
+      });
+    } else {
+      res.status(500).json({ error: 'Failed to list calendars: ' + err.message });
+    }
+  }
+});
+
+// List events from one or more calendars
+app.get('/calendar/mcp/events', authenticate, async (req, res) => {
+  try {
+    const { 
+      calendarId = 'primary', 
+      timeMin, 
+      timeMax, 
+      timeZone = 'Asia/Kolkata' 
+    } = req.query;
+    
+    const events = await mcpCalendarClient.listEvents(calendarId, timeMin, timeMax, timeZone);
     res.json(events);
   } catch (err) {
-    console.error('Google events error:', err);
-    res.status(500).json({ error: 'Failed to fetch Google Calendar events' });
+    console.error('MCP list events error:', err);
+    res.status(500).json({ error: 'Failed to list events: ' + err.message });
   }
 });
 
-app.post('/calendar/google-events', authenticate, async (req, res) => {
+// Search events by text query
+app.get('/calendar/mcp/search', authenticate, async (req, res) => {
   try {
-    if (!(await calendarService.isAuthenticated())) {
-      return res.status(401).json({ error: 'Google Calendar not connected' });
+    const { 
+      calendarId = 'primary', 
+      query, 
+      timeMin, 
+      timeMax, 
+      timeZone = 'Asia/Kolkata' 
+    } = req.query;
+    
+    if (!query) {
+      return res.status(400).json({ error: 'Search query is required' });
     }
     
-    const event = await calendarService.createEvent(req.body);
+    const events = await mcpCalendarClient.searchEvents(calendarId, query, timeMin, timeMax, timeZone);
+    res.json(events);
+  } catch (err) {
+    console.error('MCP search events error:', err);
+    res.status(500).json({ error: 'Failed to search events: ' + err.message });
+  }
+});
+
+// Create a new calendar event
+app.post('/calendar/mcp/events', authenticate, async (req, res) => {
+  try {
+    const event = await mcpCalendarClient.createEvent(req.body);
     res.status(201).json(event);
   } catch (err) {
-    console.error('Create Google event error:', err);
-    res.status(500).json({ error: 'Failed to create Google Calendar event' });
+    console.error('MCP create event error:', err);
+    res.status(500).json({ error: 'Failed to create event: ' + err.message });
+  }
+});
+
+// Update an existing calendar event
+app.put('/calendar/mcp/events/:eventId', authenticate, async (req, res) => {
+  try {
+    const { eventId } = req.params;
+    const eventData = {
+      ...req.body,
+      eventId
+    };
+    
+    const event = await mcpCalendarClient.updateEvent(eventData);
+    res.json(event);
+  } catch (err) {
+    console.error('MCP update event error:', err);
+    res.status(500).json({ error: 'Failed to update event: ' + err.message });
+  }
+});
+
+// Delete a calendar event
+app.delete('/calendar/mcp/events/:eventId', authenticate, async (req, res) => {
+  try {
+    const { eventId } = req.params;
+    const { calendarId = 'primary', sendUpdates = 'all' } = req.query;
+    
+    const result = await mcpCalendarClient.deleteEvent(calendarId, eventId, sendUpdates);
+    res.json(result);
+  } catch (err) {
+    console.error('MCP delete event error:', err);
+    res.status(500).json({ error: 'Failed to delete event: ' + err.message });
+  }
+});
+
+// Get free/busy information for calendars
+app.post('/calendar/mcp/freebusy', authenticate, async (req, res) => {
+  try {
+    const { calendars, timeMin, timeMax, timeZone = 'Asia/Kolkata' } = req.body;
+    
+    if (!calendars || !Array.isArray(calendars)) {
+      return res.status(400).json({ error: 'Calendars array is required' });
+    }
+    
+    if (!timeMin || !timeMax) {
+      return res.status(400).json({ error: 'timeMin and timeMax are required' });
+    }
+    
+    const freeBusy = await mcpCalendarClient.getFreeBusy(calendars, timeMin, timeMax, timeZone);
+    res.json(freeBusy);
+  } catch (err) {
+    console.error('MCP free/busy error:', err);
+    res.status(500).json({ error: 'Failed to get free/busy information: ' + err.message });
+  }
+});
+
+// Get current time in specified timezone
+app.get('/calendar/mcp/time', authenticate, async (req, res) => {
+  try {
+    const { timeZone } = req.query;
+    const time = await mcpCalendarClient.getCurrentTime(timeZone);
+    res.json(time);
+  } catch (err) {
+    console.error('MCP get time error:', err);
+    res.status(500).json({ error: 'Failed to get current time: ' + err.message });
+  }
+});
+
+// List available event colors
+app.get('/calendar/mcp/colors', authenticate, async (req, res) => {
+  try {
+    const colors = await mcpCalendarClient.listColors();
+    res.json(colors);
+  } catch (err) {
+    console.error('MCP list colors error:', err);
+    res.status(500).json({ error: 'Failed to list colors: ' + err.message });
+  }
+});
+
+// Advanced multi-calendar event listing
+app.post('/calendar/mcp/events/batch', authenticate, async (req, res) => {
+  try {
+    const { 
+      calendarIds = ['primary'], 
+      timeMin, 
+      timeMax, 
+      timeZone = 'Asia/Kolkata' 
+    } = req.body;
+    
+    // Use JSON string format for multiple calendars as expected by MCP server
+    const calendarIdParam = calendarIds.length > 1 ? JSON.stringify(calendarIds) : calendarIds[0];
+    
+    const events = await mcpCalendarClient.listEvents(calendarIdParam, timeMin, timeMax, timeZone);
+    res.json(events);
+  } catch (err) {
+    console.error('MCP batch events error:', err);
+    res.status(500).json({ error: 'Failed to list batch events: ' + err.message });
+  }
+});
+
+// Smart scheduling helper - find available slots
+app.post('/calendar/mcp/availability', authenticate, async (req, res) => {
+  try {
+    const { 
+      calendars = ['primary'], 
+      timeMin, 
+      timeMax, 
+      duration = 60, // duration in minutes
+      timeZone = 'Asia/Kolkata' 
+    } = req.body;
+    
+    if (!timeMin || !timeMax) {
+      return res.status(400).json({ error: 'timeMin and timeMax are required' });
+    }
+    
+    // Get free/busy information
+    const freeBusy = await mcpCalendarClient.getFreeBusy(calendars, timeMin, timeMax, timeZone);
+    
+    // Process the free/busy data to find available slots
+    const availableSlots = [];
+    const startTime = new Date(timeMin);
+    const endTime = new Date(timeMax);
+    const durationMs = duration * 60 * 1000;
+    
+    // Simple algorithm to find free slots (can be enhanced)
+    let currentTime = new Date(startTime);
+    while (currentTime.getTime() + durationMs <= endTime.getTime()) {
+      const slotEnd = new Date(currentTime.getTime() + durationMs);
+      
+      // Check if this slot conflicts with any busy periods
+      let isFree = true;
+      if (freeBusy.calendars) {
+        for (const calendarId in freeBusy.calendars) {
+          const busyPeriods = freeBusy.calendars[calendarId].busy || [];
+          for (const busy of busyPeriods) {
+            const busyStart = new Date(busy.start);
+            const busyEnd = new Date(busy.end);
+            
+            if ((currentTime < busyEnd) && (slotEnd > busyStart)) {
+              isFree = false;
+              break;
+            }
+          }
+          if (!isFree) break;
+        }
+      }
+      
+      if (isFree) {
+        availableSlots.push({
+          start: currentTime.toISOString(),
+          end: slotEnd.toISOString()
+        });
+      }
+      
+      // Move to next 30-minute slot
+      currentTime = new Date(currentTime.getTime() + (30 * 60 * 1000));
+    }
+    
+    res.json({
+      availableSlots,
+      freeBusyData: freeBusy,
+      requestedDuration: duration
+    });
+  } catch (err) {
+    console.error('MCP availability error:', err);
+    res.status(500).json({ error: 'Failed to check availability: ' + err.message });
   }
 });
 

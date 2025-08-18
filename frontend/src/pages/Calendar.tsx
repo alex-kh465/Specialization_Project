@@ -1,93 +1,351 @@
 import React, { useState, useEffect } from 'react';
-import { Calendar as CalendarIcon, Plus, Clock, BookOpen, AlertCircle, RefreshCw } from 'lucide-react';
+import { 
+  Calendar as CalendarIcon, 
+  Plus, 
+  Clock, 
+  BookOpen, 
+  AlertCircle, 
+  RefreshCw, 
+  Search,
+  MapPin,
+  Users,
+  Bell,
+  Palette,
+  Filter,
+  Eye,
+  Edit,
+  Trash2,
+  ChevronDown,
+  ChevronUp
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
+import { Badge } from '@/components/ui/badge';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Textarea } from '@/components/ui/textarea';
+import { Switch } from '@/components/ui/switch';
 import GoogleCalendarIntegration from '@/components/calendar/GoogleCalendarIntegration';
+import { useToast } from '@/hooks/use-toast';
 
-interface Event {
+// Enhanced interfaces for MCP Calendar
+interface GoogleCalendarEvent {
   id: string;
-  title: string;
-  date: string;
-  time: string;
-  type: 'exam' | 'assignment' | 'class' | 'personal';
+  summary: string;
+  description?: string;
+  start: {
+    dateTime: string;
+    timeZone: string;
+  };
+  end: {
+    dateTime: string;
+    timeZone: string;
+  };
+  location?: string;
+  attendees?: Array<{
+    email: string;
+    displayName?: string;
+    responseStatus?: string;
+  }>;
+  colorId?: string;
+  recurring?: boolean;
+  status?: string;
+  htmlLink?: string;
+}
+
+interface Calendar {
+  id: string;
+  summary: string;
+  description?: string;
+  primary?: boolean;
+  selected?: boolean;
+}
+
+interface EventColor {
+  background: string;
+  foreground: string;
+}
+
+interface AvailabilitySlot {
+  start: string;
+  end: string;
 }
 
 interface NewEvent {
-  title: string;
-  date: string;
-  time: string;
-  type: Event['type'];
+  calendarId: string;
+  summary: string;
+  description: string;
+  start: string;
+  end: string;
+  location: string;
+  attendees: Array<{email: string}>;
+  colorId?: string;
+  reminders?: {
+    useDefault: boolean;
+    overrides: Array<{method: string; minutes: number}>;
+  };
+  recurrence?: string[];
 }
 
 const API_URL = 'http://localhost:4000';
 const getToken = () => (typeof window !== 'undefined' ? localStorage.getItem('token') : '');
 
 const Calendar: React.FC = () => {
-  const [events, setEvents] = useState<Event[]>([]);
+  // State for MCP Calendar features
+  const [googleEvents, setGoogleEvents] = useState<GoogleCalendarEvent[]>([]);
+  const [calendars, setCalendars] = useState<Calendar[]>([]);
+  const [colors, setColors] = useState<{[key: string]: EventColor}>({});
+  const [availableSlots, setAvailableSlots] = useState<AvailabilitySlot[]>([]);
+  const [selectedCalendars, setSelectedCalendars] = useState<string[]>(['primary']);
+  
+  // UI State
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [activeTab, setActiveTab] = useState('events');
   const [showAddModal, setShowAddModal] = useState(false);
-  const [newEvent, setNewEvent] = useState<NewEvent>({ title: '', date: '', time: '', type: 'personal' });
+  const [showAdvancedAdd, setShowAdvancedAdd] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [dateRange, setDateRange] = useState({ start: '', end: '' });
+  const [isSearching, setIsSearching] = useState(false);
+  
+  // Event management
+  const [newEvent, setNewEvent] = useState<NewEvent>({
+    calendarId: 'primary',
+    summary: '',
+    description: '',
+    start: '',
+    end: '',
+    location: '',
+    attendees: [],
+    reminders: { useDefault: true, overrides: [] }
+  });
+  const [editingEvent, setEditingEvent] = useState<GoogleCalendarEvent | null>(null);
   const [addingEvent, setAddingEvent] = useState(false);
+  
+  const { toast } = useToast();
 
-  const fetchEvents = async () => {
+  // MCP Calendar API Functions
+  const fetchMCPCalendars = async () => {
+    try {
+      const token = getToken();
+      const response = await fetch(`${API_URL}/calendar/mcp/calendars`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setCalendars(data.items || []);
+      }
+    } catch (error) {
+      console.error('Failed to fetch calendars:', error);
+    }
+  };
+
+  const fetchMCPEvents = async () => {
     setLoading(true);
     setError('');
     try {
       const token = getToken();
-      const res = await fetch(`${API_URL}/calendar/events`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
+      const now = new Date();
+      const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, now.getDate());
+      
+      const params = new URLSearchParams({
+        calendarId: selectedCalendars.join(','),
+        timeMin: now.toISOString().slice(0, 19),
+        timeMax: nextMonth.toISOString().slice(0, 19),
+        timeZone: 'Asia/Kolkata'
       });
       
-      if (!res.ok) {
-        throw new Error('Failed to fetch events');
-      }
+      const response = await fetch(`${API_URL}/calendar/mcp/events?${params}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       
-      const data = await res.json();
-      setEvents(data);
+      if (response.ok) {
+        const data = await response.json();
+        setGoogleEvents(data.items || []);
+      } else {
+        throw new Error('Failed to fetch Google Calendar events');
+      }
     } catch (err: any) {
       setError(err.message || 'Failed to load events');
+      toast({
+        title: "Error",
+        description: err.message || 'Failed to load events',
+        variant: "destructive"
+      });
     } finally {
       setLoading(false);
     }
   };
 
-  const addEvent = async () => {
-    if (newEvent.title && newEvent.date && newEvent.time) {
-      setAddingEvent(true);
-      try {
-        const token = getToken();
-        const res = await fetch(`${API_URL}/calendar/events`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(newEvent),
-        });
-        
-        if (!res.ok) {
-          throw new Error('Failed to add event');
-        }
-        
-        const addedEvent = await res.json();
-        setEvents(prev => [...prev, addedEvent]);
-        setNewEvent({ title: '', date: '', time: '', type: 'personal' });
-        setShowAddModal(false);
-      } catch (err: any) {
-        alert(`Error adding event: ${err.message}`);
-      } finally {
-        setAddingEvent(false);
+  const fetchColors = async () => {
+    try {
+      const token = getToken();
+      const response = await fetch(`${API_URL}/calendar/mcp/colors`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setColors(data.event || {});
       }
+    } catch (error) {
+      console.error('Failed to fetch colors:', error);
+    }
+  };
+
+  const searchEvents = async () => {
+    if (!searchQuery.trim()) return;
+    
+    setIsSearching(true);
+    try {
+      const token = getToken();
+      const now = new Date();
+      const nextMonth = new Date(now.getFullYear(), now.getMonth() + 3, now.getDate());
+      
+      const params = new URLSearchParams({
+        calendarId: 'primary',
+        query: searchQuery,
+        timeMin: dateRange.start || now.toISOString().slice(0, 19),
+        timeMax: dateRange.end || nextMonth.toISOString().slice(0, 19),
+        timeZone: 'Asia/Kolkata'
+      });
+      
+      const response = await fetch(`${API_URL}/calendar/mcp/search?${params}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setGoogleEvents(data.items || []);
+        toast({
+          title: "Search Complete",
+          description: `Found ${data.items?.length || 0} events`
+        });
+      }
+    } catch (error) {
+      toast({
+        title: "Search Failed",
+        description: "Failed to search events",
+        variant: "destructive"
+      });
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const findAvailableSlots = async () => {
+    try {
+      const token = getToken();
+      const now = new Date();
+      const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+      
+      const response = await fetch(`${API_URL}/calendar/mcp/availability`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          calendars: selectedCalendars,
+          timeMin: now.toISOString().slice(0, 19),
+          timeMax: tomorrow.toISOString().slice(0, 19),
+          duration: 60,
+          timeZone: 'Asia/Kolkata'
+        })
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setAvailableSlots(data.availableSlots || []);
+        toast({
+          title: "Availability Found",
+          description: `Found ${data.availableSlots?.length || 0} available slots`
+        });
+      }
+    } catch (error) {
+      toast({
+        title: "Availability Check Failed",
+        description: "Failed to find available slots",
+        variant: "destructive"
+      });
+    }
+  };
+
+  const createMCPEvent = async () => {
+    if (!newEvent.summary || !newEvent.start || !newEvent.end) return;
+    
+    setAddingEvent(true);
+    try {
+      const token = getToken();
+      const response = await fetch(`${API_URL}/calendar/mcp/events`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(newEvent)
+      });
+      
+      if (response.ok) {
+        toast({
+          title: "Event Created",
+          description: "Your event has been added to Google Calendar"
+        });
+        setShowAddModal(false);
+        setNewEvent({
+          calendarId: 'primary',
+          summary: '',
+          description: '',
+          start: '',
+          end: '',
+          location: '',
+          attendees: [],
+          reminders: { useDefault: true, overrides: [] }
+        });
+        fetchMCPEvents();
+      } else {
+        throw new Error('Failed to create event');
+      }
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error.message || 'Failed to create event',
+        variant: "destructive"
+      });
+    } finally {
+      setAddingEvent(false);
+    }
+  };
+
+  const deleteEvent = async (eventId: string) => {
+    try {
+      const token = getToken();
+      const response = await fetch(`${API_URL}/calendar/mcp/events/${eventId}?calendarId=primary`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      
+      if (response.ok) {
+        toast({
+          title: "Event Deleted",
+          description: "The event has been removed from your calendar"
+        });
+        fetchMCPEvents();
+      }
+    } catch (error) {
+      toast({
+        title: "Delete Failed",
+        description: "Failed to delete the event",
+        variant: "destructive"
+      });
     }
   };
 
   useEffect(() => {
-    fetchEvents();
+    fetchMCPCalendars();
+    fetchMCPEvents();
+    fetchColors();
   }, []);
 
   const getEventIcon = (type: string) => {

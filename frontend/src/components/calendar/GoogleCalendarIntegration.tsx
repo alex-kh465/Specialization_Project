@@ -20,7 +20,8 @@ const GoogleCalendarIntegration: React.FC = () => {
   const checkAuthStatus = async () => {
     try {
       const token = getToken();
-      const response = await fetch(`${API_URL}/calendar/auth-status`, {
+      // Try to fetch calendars to check if MCP Calendar is working
+      const response = await fetch(`${API_URL}/calendar/mcp/calendars`, {
         headers: {
           'Authorization': `Bearer ${token}`,
         },
@@ -28,10 +29,13 @@ const GoogleCalendarIntegration: React.FC = () => {
       
       if (response.ok) {
         const data = await response.json();
-        setIsConnected(data.authenticated);
+        setIsConnected(data.items && data.items.length > 0);
+      } else {
+        setIsConnected(false);
       }
     } catch (error) {
-      console.error('Error checking auth status:', error);
+      console.error('Error checking MCP auth status:', error);
+      setIsConnected(false);
     } finally {
       setLoading(false);
     }
@@ -40,25 +44,30 @@ const GoogleCalendarIntegration: React.FC = () => {
   const handleConnect = async () => {
     setIsConnecting(true);
     try {
+      // For MCP Calendar, we'll trigger a simple calendar fetch which should trigger OAuth flow
+      toast({
+        title: "Connecting to Google Calendar",
+        description: "This will trigger the MCP server OAuth flow. Please check your terminal/console.",
+      });
+      
+      // Try to fetch calendars - this will trigger MCP OAuth flow if not authenticated
       const token = getToken();
-      const response = await fetch(`${API_URL}/calendar/auth-url`, {
+      const response = await fetch(`${API_URL}/calendar/mcp/calendars`, {
         headers: {
           'Authorization': `Bearer ${token}`,
         },
       });
-
-      if (!response.ok) {
-        throw new Error('Failed to get authorization URL');
-      }
-
-      const data = await response.json();
       
-      // Open Google OAuth in a popup window
-      const popup = window.open(
-        data.authUrl,
-        'google-calendar-auth',
-        'width=600,height=600,scrollbars=yes,resizable=yes'
-      );
+      if (response.ok) {
+        setIsConnected(true);
+        toast({
+          title: "🎉 Calendar Connected!",
+          description: "Your Google Calendar is now connected via MCP server!",
+          duration: 5000,
+        });
+      } else {
+        throw new Error('MCP Calendar connection failed');
+      }
 
       // Listen for messages from the popup window
       const messageListener = (event: MessageEvent) => {
