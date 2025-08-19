@@ -53,24 +53,20 @@ const GoogleCalendarIntegration: React.FC = () => {
       const token = getToken();
       console.log('Checking auth status...');
       
-      // Try to fetch calendars to check if MCP Calendar is working
-      const response = await fetch(`${API_URL}/calendar/mcp/calendars`, {
+      // Use working calendar status endpoint for status check
+      const response = await fetch(`${API_URL}/calendar/mcp/status`, {
         headers: {
           'Authorization': `Bearer ${token}`,
         },
       });
       
-      console.log('Calendar check response status:', response.status);
+      console.log('Calendar health check response status:', response.status);
       
       if (response.ok) {
         const data = await response.json();
-        console.log('Calendar data received:', data);
+        console.log('Calendar health data received:', data);
         
-        // Check for different possible response formats
-        const connected = (data && data.items && data.items.length > 0) || 
-                         (data && data.calendars && data.calendars.length > 0) ||
-                         (Array.isArray(data) && data.length > 0) ||
-                         (data && typeof data === 'object' && Object.keys(data).length > 0);
+        const connected = data.mcpConnected;
         
         console.log('Connection status determined:', connected);
         
@@ -78,16 +74,28 @@ const GoogleCalendarIntegration: React.FC = () => {
           updateConnectionState(true);
           console.log('Calendar connection confirmed - updating UI state');
         } else {
-          console.log('No calendars found, treating as disconnected');
+          console.log('Calendar service not healthy, treating as disconnected');
           updateConnectionState(false);
         }
       } else {
-        const errorData = await response.json().catch(() => ({}));
-        console.log('Calendar check failed:', errorData);
-        updateConnectionState(false);
+        // Try fallback with calendars endpoint
+        console.log('Status endpoint failed, trying calendars fallback...');
+        const fallbackResponse = await fetch(`${API_URL}/calendar/mcp/calendars`, {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+          },
+        });
+        
+        if (fallbackResponse.ok) {
+          const fallbackData = await fallbackResponse.json();
+          const connected = fallbackData.message && fallbackData.message.includes('calendar');
+          updateConnectionState(connected);
+        } else {
+          updateConnectionState(false);
+        }
       }
     } catch (error) {
-      console.error('Error checking MCP auth status:', error);
+      console.error('Error checking calendar auth status:', error);
       updateConnectionState(false);
     } finally {
       setLoading(false);

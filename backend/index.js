@@ -5,7 +5,8 @@ import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
 import fetch from 'node-fetch';
 import * as chrono from 'chrono-node';
-import mcpCalendarClient from './mcp-calendar-client.js';
+import { calendarMCP } from './calendar/mcp/index.js';
+import { setupCalendarEndpoints } from './calendar-endpoints-minimal.js';
 
 
 // Load environment variables
@@ -24,11 +25,11 @@ const supabase = createClient(
 // MCP Calendar Client (using the existing google-calendar-mcp server)
 console.log('MCP Calendar client initializing...');
 
-// Initialize MCP client connection on startup
-mcpCalendarClient.connect().then(() => {
-  console.log('MCP Calendar client connection established');
+// Initialize calendar MCP service on startup
+calendarMCP.init().then(() => {
+  console.log('Calendar MCP service initialized successfully');
 }).catch((error) => {
-  console.log('MCP Calendar client connection failed, will retry on demand:', error.message);
+  console.log('Calendar MCP service initialization failed, will retry on demand:', error.message);
 });
 
 // Middleware to extract user_id from Authorization header (JWT)
@@ -384,6 +385,33 @@ You have full access to Google Calendar operations. ONLY for calendar-related re
   "message": "Getting your calendars..."
 }
 
+8. GET EVENT COLORS:
+{
+  "type": "calendar_colors",
+  "message": "Getting available colors..."
+}
+
+9. GET CURRENT TIME:
+{
+  "type": "calendar_time",
+  "params": {
+    "timeZone": "Asia/Kolkata" (optional)
+  },
+  "message": "Getting current time..."
+}
+
+10. FREE/BUSY CHECK:
+{
+  "type": "calendar_freebusy",
+  "params": {
+    "calendars": ["primary"],
+    "timeMin": "YYYY-MM-DDTHH:MM:SS",
+    "timeMax": "YYYY-MM-DDTHH:MM:SS",
+    "timeZone": "Asia/Kolkata"
+  },
+  "message": "Checking your busy times..."
+}
+
 Current date/time reference: ${new Date().toISOString()}
 Default timezone: Asia/Kolkata
 
@@ -395,6 +423,9 @@ Examples:
 - "Cancel my evening meeting" → calendar_delete
 - "When am I free tomorrow?" → calendar_availability
 - "Show my calendars" → calendar_calendars
+- "What colors can I use for events?" → calendar_colors
+- "What time is it?" → calendar_time
+- "Am I busy this afternoon?" → calendar_freebusy
 
 IMPORTANT: For event creation requests:
 - If user gives basic details (title, time), create the event immediately with reasonable defaults
@@ -516,7 +547,7 @@ For non-calendar requests, respond normally as an academic assistant.`
         try {
           switch (operationData.type) {
             case 'calendar_create':
-              calendarResult = await mcpCalendarClient.createEvent(operationData.event);
+              calendarResult = await calendarMCP.createEvent(operationData.event);
               const startDate = new Date(operationData.event.start);
               const endDate = new Date(operationData.event.end);
               responseMessage = calendarResult ? 
@@ -526,10 +557,33 @@ For non-calendar requests, respond normally as an academic assistant.`
               
             case 'calendar_list':
               const listParams = operationData.params || {};
-              calendarResult = await mcpCalendarClient.listEvents(
+              
+              // Set default time range if not provided
+              let listTimeMin = listParams.timeMin;
+              let listTimeMax = listParams.timeMax;
+              
+              // Ensure proper ISO 8601 format with timezone
+              if (!listTimeMin) {
+                const now = new Date();
+                listTimeMin = now.toISOString();
+              } else if (!listTimeMin.includes('T') || (!listTimeMin.includes('Z') && !listTimeMin.includes('+') && !listTimeMin.includes('-'))) {
+                // If AI provided incomplete format, convert to full ISO 8601
+                listTimeMin = new Date(listTimeMin).toISOString();
+              }
+              
+              if (!listTimeMax) {
+                const oneWeek = new Date();
+                oneWeek.setDate(oneWeek.getDate() + 7);
+                listTimeMax = oneWeek.toISOString();
+              } else if (!listTimeMax.includes('T') || (!listTimeMax.includes('Z') && !listTimeMax.includes('+') && !listTimeMax.includes('-'))) {
+                // If AI provided incomplete format, convert to full ISO 8601
+                listTimeMax = new Date(listTimeMax).toISOString();
+              }
+              
+              calendarResult = await calendarMCP.listEvents(
                 listParams.calendarId || 'primary',
-                listParams.timeMin,
-                listParams.timeMax,
+                listTimeMin,
+                listTimeMax,
                 'Asia/Kolkata'
               );
               const events = calendarResult?.events || [];
@@ -544,11 +598,35 @@ For non-calendar requests, respond normally as an academic assistant.`
               
             case 'calendar_search':
               const searchParams = operationData.params || {};
-              calendarResult = await mcpCalendarClient.searchEvents(
+              
+              // Set default time range if not provided (search requires these parameters)
+              let searchTimeMin = searchParams.timeMin;
+              let searchTimeMax = searchParams.timeMax;
+              
+              // Ensure timeMin has proper timezone format
+              if (!searchTimeMin) {
+                const now = new Date();
+                searchTimeMin = now.toISOString();
+              } else if (!searchTimeMin.includes('T') || (!searchTimeMin.includes('Z') && !searchTimeMin.includes('+'))) {
+                // If AI provided incomplete format, convert to full ISO 8601
+                searchTimeMin = new Date(searchTimeMin).toISOString();
+              }
+              
+              // Ensure timeMax has proper timezone format
+              if (!searchTimeMax) {
+                const oneMonth = new Date();
+                oneMonth.setMonth(oneMonth.getMonth() + 1);
+                searchTimeMax = oneMonth.toISOString();
+              } else if (!searchTimeMax.includes('T') || (!searchTimeMax.includes('Z') && !searchTimeMax.includes('+'))) {
+                // If AI provided incomplete format, convert to full ISO 8601
+                searchTimeMax = new Date(searchTimeMax).toISOString();
+              }
+              
+              calendarResult = await calendarMCP.searchEvents(
                 'primary',
                 searchParams.query,
-                searchParams.timeMin,
-                searchParams.timeMax,
+                searchTimeMin,
+                searchTimeMax,
                 'Asia/Kolkata'
               );
               const searchEvents = calendarResult?.events || [];
@@ -570,7 +648,7 @@ For non-calendar requests, respond normally as an academic assistant.`
               const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate()).toISOString();
               const todayEnd = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1).toISOString();
               
-              const searchResult = await mcpCalendarClient.searchEvents(
+              const searchResult = await calendarMCP.searchEvents(
                 'primary',
                 updateParams.searchQuery,
                 updateParams.timeMin || todayStart,
@@ -586,7 +664,7 @@ For non-calendar requests, respond normally as an academic assistant.`
                   calendarId: 'primary',
                   ...updateParams.updates
                 };
-                calendarResult = await mcpCalendarClient.updateEvent(updateData);
+                calendarResult = await calendarMCP.updateEvent(updateData);
                 responseMessage = calendarResult ? 
                   `✅ **Event updated successfully!**\n\n📅 **${calendarResult.summary || eventToUpdate.summary}**\n🔄 Changes applied` :
                   `❌ Failed to update event.`;
@@ -604,7 +682,7 @@ For non-calendar requests, respond normally as an academic assistant.`
               const deleteTodayStart = new Date(deleteToday.getFullYear(), deleteToday.getMonth(), deleteToday.getDate()).toISOString();
               const deleteTodayEnd = new Date(deleteToday.getFullYear(), deleteToday.getMonth(), deleteToday.getDate() + 1).toISOString();
               
-              const deleteSearchResult = await mcpCalendarClient.searchEvents(
+              const deleteSearchResult = await calendarMCP.searchEvents(
                 'primary',
                 deleteParams.searchQuery,
                 deleteParams.timeMin || deleteTodayStart,
@@ -615,7 +693,7 @@ For non-calendar requests, respond normally as an academic assistant.`
               
               if (eventsToDelete.length > 0) {
                 const eventToDelete = eventsToDelete[0];
-                calendarResult = await mcpCalendarClient.deleteEvent(
+                calendarResult = await calendarMCP.deleteEvent(
                   'primary',
                   eventToDelete.id,
                   'all'
@@ -628,7 +706,7 @@ For non-calendar requests, respond normally as an academic assistant.`
               
             case 'calendar_availability':
               const availParams = operationData.params || {};
-              const availabilityResult = await mcpCalendarClient.getFreeBusy(
+              const availabilityResult = await calendarMCP.getFreeBusy(
                 ['primary'],
                 availParams.timeMin,
                 availParams.timeMax,
@@ -648,7 +726,7 @@ For non-calendar requests, respond normally as an academic assistant.`
               break;
               
             case 'calendar_calendars':
-              calendarResult = await mcpCalendarClient.listCalendars();
+              calendarResult = await calendarMCP.listCalendars();
               const calendars = calendarResult?.calendars || [];
               responseMessage = calendars.length > 0 ? 
                 `📅 **Your calendars:**\n\n` + 
@@ -656,6 +734,53 @@ For non-calendar requests, respond normally as an academic assistant.`
                   return `• **${cal.summary}**${cal.primary ? ' (Primary)' : ''}\n  📧 ${cal.id}`;
                 }).join('\n\n') :
                 `📅 **No calendars found**.`;
+              break;
+              
+            case 'calendar_colors':
+              calendarResult = await calendarMCP.listColors();
+              const formattedColors = formatMCPResponse(calendarResult, 'colors');
+              const colorEntries = formattedColors?.event || {};
+              responseMessage = Object.keys(colorEntries).length > 0 ? 
+                `🎨 **Available event colors:**\n\n` + 
+                Object.entries(colorEntries).map(([id, colors]) => {
+                  return `• **Color ${id}:** Background: ${colors.background}, Text: ${colors.foreground}`;
+                }).join('\n') :
+                `🎨 **No color information available**.`;
+              break;
+              
+            case 'calendar_time':
+              const timeParams = operationData.params || {};
+              calendarResult = await calendarMCP.getCurrentTime(timeParams.timeZone);
+              const currentTime = new Date();
+              responseMessage = `🕐 **Current time:**\n\n📅 ${currentTime.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}\n🌏 Timezone: Asia/Kolkata`;
+              break;
+              
+            case 'calendar_freebusy':
+              const freeBusyParams = operationData.params || {};
+              const freeBusyResult = await calendarMCP.getFreeBusy(
+                freeBusyParams.calendars || ['primary'],
+                freeBusyParams.timeMin,
+                freeBusyParams.timeMax,
+                freeBusyParams.timeZone || 'Asia/Kolkata'
+              );
+              
+              // Process free/busy data for display
+              const busySlots = [];
+              if (freeBusyResult?.calendars) {
+                for (const calendarId in freeBusyResult.calendars) {
+                  const calendarBusy = freeBusyResult.calendars[calendarId].busy || [];
+                  busySlots.push(...calendarBusy);
+                }
+              }
+              
+              responseMessage = busySlots.length > 0 ? 
+                `📊 **Free/Busy Check:**\n\n🔴 **Busy periods:**\n` + 
+                busySlots.map(busy => {
+                  const start = new Date(busy.start);
+                  const end = new Date(busy.end);
+                  return `• ${start.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} - ${end.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })}`;
+                }).join('\n') :
+                `✅ **You're completely free** during the specified time period!`;
               break;
               
             default:
@@ -1007,10 +1132,11 @@ app.get('/oauth2callback', async (req, res) => {
 
 // Check calendar setup status
 app.get('/calendar/mcp/status', authenticate, async (req, res) => {
+  const status = calendarMCP.getStatus();
   res.json({
-    mcpConnected: mcpCalendarClient.isConnected,
-    serverPath: mcpCalendarClient.mcpServerPath,
-    credentialsPath: mcpCalendarClient.credentialsPath,
+    mcpConnected: status.ready,
+    initialized: status.initialized,
+    authenticated: status.authenticated,
     setupInstructions: 'To set up calendar integration, please configure Google Calendar OAuth credentials as described in the documentation.'
   });
 });
@@ -1021,12 +1147,12 @@ app.post('/calendar/mcp/setup-auth', authenticate, async (req, res) => {
     console.log('Starting calendar authentication setup...');
     
     // Try to connect to MCP server which will trigger authentication if needed
-    await mcpCalendarClient.connect();
+    await calendarMCP.connect();
     
-    if (mcpCalendarClient.isConnected) {
+    if (calendarMCP.isConnected) {
       // Try to list calendars to verify authentication
       try {
-        const calendars = await mcpCalendarClient.listCalendars();
+        const calendars = await calendarMCP.listCalendars();
         res.json({
           success: true,
           message: 'Calendar authentication completed successfully',
@@ -1070,7 +1196,7 @@ app.post('/calendar/mcp/test-create', authenticate, async (req, res) => {
     };
     
     console.log('Creating test event:', testEvent);
-    const result = await mcpCalendarClient.createEvent(testEvent);
+    const result = await calendarMCP.createEvent(testEvent);
     console.log('Test event result:', result);
     
     res.json({
@@ -1180,7 +1306,7 @@ app.post('/ai/debug-calendar', authenticate, async (req, res) => {
         // Execute the calendar operation
         switch (operationData.type) {
           case 'calendar_create':
-            calendarResult = await mcpCalendarClient.createEvent(operationData.event);
+            calendarResult = await calendarMCP.createEvent(operationData.event);
             const startDate = new Date(operationData.event.start);
             const endDate = new Date(operationData.event.end);
             responseMessage = calendarResult ? 
@@ -1190,7 +1316,7 @@ app.post('/ai/debug-calendar', authenticate, async (req, res) => {
             
           case 'calendar_list':
             const listParams = operationData.params || {};
-            calendarResult = await mcpCalendarClient.listEvents(
+            calendarResult = await calendarMCP.listEvents(
               listParams.calendarId || 'primary',
               listParams.timeMin,
               listParams.timeMax,
@@ -1230,11 +1356,129 @@ app.post('/ai/debug-calendar', authenticate, async (req, res) => {
   }
 });
 
+// Helper function to format MCP responses for frontend consistency
+const formatMCPResponse = (mcpResult, type = 'unknown') => {
+  // If mcpResult has a message property (plain text response), try to extract structured data
+  if (mcpResult.message && typeof mcpResult.message === 'string') {
+    const message = mcpResult.message;
+    
+    switch (type) {
+      case 'calendars':
+        // Parse calendar list from message text
+        const calendars = [];
+        const calendarBlocks = message.split('\n\n').filter(block => block.trim());
+        
+        for (const block of calendarBlocks) {
+          const lines = block.split('\n');
+          const titleLine = lines[0];
+          if (titleLine && titleLine.includes('(') && titleLine.includes(')')) {
+            const match = titleLine.match(/^(.+?)\s*\(([^)]+)\)$/);
+            if (match) {
+              const [, summary, id] = match;
+              const isPrimary = titleLine.includes('PRIMARY');
+              calendars.push({
+                id: id.trim(),
+                summary: summary.trim(),
+                primary: isPrimary
+              });
+            }
+          }
+        }
+        return { calendars, total: calendars.length };
+        
+      case 'events':
+        // Parse events list from message text
+        const events = [];
+        console.log('Parsing events from message:', message.substring(0, 300) + '...');
+        
+        if (message.includes('Found ') && message.includes('event(s):')) {
+          const eventBlocks = message.split(/\n\n\d+\. /).slice(1);
+          console.log('Found event blocks:', eventBlocks.length);
+          
+          for (const block of eventBlocks) {
+            const lines = block.split('\n');
+            const eventLine = lines[0];
+            console.log('Processing event line:', eventLine);
+            
+            if (eventLine && eventLine.startsWith('Event: ')) {
+              const summary = eventLine.replace('Event: ', '');
+              const idLine = lines.find(l => l.startsWith('Event ID: '));
+              const descLine = lines.find(l => l.startsWith('Description: '));
+              const startLine = lines.find(l => l.startsWith('Start: '));
+              const endLine = lines.find(l => l.startsWith('End: '));
+              const locationLine = lines.find(l => l.startsWith('Location: '));
+              const viewLine = lines.find(l => l.startsWith('View: '));
+              
+              if (idLine && startLine && endLine) {
+                const parseDateTime = (dateStr) => {
+                  const cleanStr = dateStr.replace(/ GMT.*$/, '');
+                  try {
+                    return new Date(cleanStr).toISOString();
+                  } catch (e) {
+                    console.warn('Failed to parse date:', dateStr);
+                    return dateStr; // Return original if parsing fails
+                  }
+                };
+                
+                const event = {
+                  id: idLine.replace('Event ID: ', ''),
+                  summary,
+                  description: descLine ? descLine.replace('Description: ', '') : '',
+                  start: {
+                    dateTime: parseDateTime(startLine.replace('Start: ', '')),
+                    timeZone: 'Asia/Kolkata'
+                  },
+                  end: {
+                    dateTime: parseDateTime(endLine.replace('End: ', '')),
+                    timeZone: 'Asia/Kolkata'
+                  },
+                  location: locationLine ? locationLine.replace('Location: ', '') : '',
+                  htmlLink: viewLine ? viewLine.replace('View: ', '') : ''
+                };
+                
+                console.log('Parsed event:', event.summary, event.start.dateTime);
+                events.push(event);
+              } else {
+                console.warn('Missing required fields for event:', { idLine: !!idLine, startLine: !!startLine, endLine: !!endLine });
+              }
+            }
+          }
+        } else if (message.includes('No events found') || message.includes('no events')) {
+          console.log('No events found in message');
+        } else {
+          console.log('Message format not recognized for events parsing');
+        }
+        return { events, total: events.length };
+        
+      case 'colors':
+        // Parse colors from message text
+        const colors = {};
+        const colorLines = message.split('\n').filter(line => line.includes('Color ID:'));
+        
+        for (const line of colorLines) {
+          const match = line.match(/Color ID: (\d+) - (#[0-9a-f]{6}) \(background\) \/ (#[0-9a-f]{6}) \(foreground\)/);
+          if (match) {
+            const [, id, background, foreground] = match;
+            colors[id] = { background, foreground };
+          }
+        }
+        return { event: colors };
+        
+      default:
+        return mcpResult;
+    }
+  }
+  
+  // If it's already structured data, return as-is
+  return mcpResult;
+};
+
 // List all calendars
 app.get('/calendar/mcp/calendars', authenticate, async (req, res) => {
   try {
-    const calendars = await mcpCalendarClient.listCalendars();
-    res.json(calendars);
+    const calendars = await calendarMCP.listCalendars();
+    const formattedResponse = formatMCPResponse(calendars, 'calendars');
+    res.json(formattedResponse);
   } catch (err) {
     console.error('MCP list calendars error:', err);
     if (err.message.includes('Calendar service is currently unavailable')) {
@@ -1259,8 +1503,13 @@ app.get('/calendar/mcp/events', authenticate, async (req, res) => {
       timeZone = 'Asia/Kolkata' 
     } = req.query;
     
-    const events = await mcpCalendarClient.listEvents(calendarId, timeMin, timeMax, timeZone);
-    res.json(events);
+    // Apply proper ISO 8601 formatting
+    const formattedTimeMin = timeMin ? calendarMCP.toIso8601(timeMin) : timeMin;
+    const formattedTimeMax = timeMax ? calendarMCP.toIso8601(timeMax) : timeMax;
+    
+    const events = await calendarMCP.listEvents(calendarId, formattedTimeMin, formattedTimeMax, timeZone);
+    const formattedResponse = formatMCPResponse(events, 'events');
+    res.json(formattedResponse);
   } catch (err) {
     console.error('MCP list events error:', err);
     res.status(500).json({ error: 'Failed to list events: ' + err.message });
@@ -1272,18 +1521,26 @@ app.get('/calendar/mcp/search', authenticate, async (req, res) => {
   try {
     const { 
       calendarId = 'primary', 
-      query, 
+      query: rawQuery, 
       timeMin, 
       timeMax, 
       timeZone = 'Asia/Kolkata' 
     } = req.query;
     
+    // Ensure query is a string, not an array
+    const query = Array.isArray(rawQuery) ? rawQuery[0] : rawQuery;
+    
     if (!query) {
       return res.status(400).json({ error: 'Search query is required' });
     }
     
-    const events = await mcpCalendarClient.searchEvents(calendarId, query, timeMin, timeMax, timeZone);
-    res.json(events);
+    // Apply proper ISO 8601 formatting
+    const formattedTimeMin = timeMin ? calendarMCP.toIso8601(timeMin) : timeMin;
+    const formattedTimeMax = timeMax ? calendarMCP.toIso8601(timeMax) : timeMax;
+    
+    const events = await calendarMCP.searchEvents(calendarId, query, formattedTimeMin, formattedTimeMax, timeZone);
+    const formattedResponse = formatMCPResponse(events, 'events');
+    res.json(formattedResponse);
   } catch (err) {
     console.error('MCP search events error:', err);
     res.status(500).json({ error: 'Failed to search events: ' + err.message });
@@ -1293,7 +1550,7 @@ app.get('/calendar/mcp/search', authenticate, async (req, res) => {
 // Create a new calendar event
 app.post('/calendar/mcp/events', authenticate, async (req, res) => {
   try {
-    const event = await mcpCalendarClient.createEvent(req.body);
+    const event = await calendarMCP.createEvent(req.body);
     res.status(201).json(event);
   } catch (err) {
     console.error('MCP create event error:', err);
@@ -1310,7 +1567,7 @@ app.put('/calendar/mcp/events/:eventId', authenticate, async (req, res) => {
       eventId
     };
     
-    const event = await mcpCalendarClient.updateEvent(eventData);
+    const event = await calendarMCP.updateEvent(eventData);
     res.json(event);
   } catch (err) {
     console.error('MCP update event error:', err);
@@ -1324,7 +1581,7 @@ app.delete('/calendar/mcp/events/:eventId', authenticate, async (req, res) => {
     const { eventId } = req.params;
     const { calendarId = 'primary', sendUpdates = 'all' } = req.query;
     
-    const result = await mcpCalendarClient.deleteEvent(calendarId, eventId, sendUpdates);
+    const result = await calendarMCP.deleteEvent(calendarId, eventId, sendUpdates);
     res.json(result);
   } catch (err) {
     console.error('MCP delete event error:', err);
@@ -1345,7 +1602,7 @@ app.post('/calendar/mcp/freebusy', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'timeMin and timeMax are required' });
     }
     
-    const freeBusy = await mcpCalendarClient.getFreeBusy(calendars, timeMin, timeMax, timeZone);
+    const freeBusy = await calendarMCP.getFreeBusy(calendars, timeMin, timeMax, timeZone);
     res.json(freeBusy);
   } catch (err) {
     console.error('MCP free/busy error:', err);
@@ -1357,7 +1614,7 @@ app.post('/calendar/mcp/freebusy', authenticate, async (req, res) => {
 app.get('/calendar/mcp/time', authenticate, async (req, res) => {
   try {
     const { timeZone } = req.query;
-    const time = await mcpCalendarClient.getCurrentTime(timeZone);
+    const time = await calendarMCP.getCurrentTime(timeZone);
     res.json(time);
   } catch (err) {
     console.error('MCP get time error:', err);
@@ -1368,8 +1625,9 @@ app.get('/calendar/mcp/time', authenticate, async (req, res) => {
 // List available event colors
 app.get('/calendar/mcp/colors', authenticate, async (req, res) => {
   try {
-    const colors = await mcpCalendarClient.listColors();
-    res.json(colors);
+    const colors = await calendarMCP.listColors();
+    const formattedResponse = formatMCPResponse(colors, 'colors');
+    res.json(formattedResponse);
   } catch (err) {
     console.error('MCP list colors error:', err);
     res.status(500).json({ error: 'Failed to list colors: ' + err.message });
@@ -1389,7 +1647,7 @@ app.post('/calendar/mcp/events/batch', authenticate, async (req, res) => {
     // Use JSON string format for multiple calendars as expected by MCP server
     const calendarIdParam = calendarIds.length > 1 ? JSON.stringify(calendarIds) : calendarIds[0];
     
-    const events = await mcpCalendarClient.listEvents(calendarIdParam, timeMin, timeMax, timeZone);
+    const events = await calendarMCP.listEvents(calendarIdParam, timeMin, timeMax, timeZone);
     res.json(events);
   } catch (err) {
     console.error('MCP batch events error:', err);
@@ -1413,7 +1671,7 @@ app.post('/calendar/mcp/availability', authenticate, async (req, res) => {
     }
     
     // Get free/busy information
-    const freeBusy = await mcpCalendarClient.getFreeBusy(calendars, timeMin, timeMax, timeZone);
+    const freeBusy = await calendarMCP.getFreeBusy(calendars, timeMin, timeMax, timeZone);
     
     // Process the free/busy data to find available slots
     const availableSlots = [];
@@ -1498,8 +1756,25 @@ app.delete('/auth/delete-account', authenticate, async (req, res) => {
   }
 });
 
+// Setup new calendar endpoints
+setupCalendarEndpoints(app, authenticate);
+
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`Backend API running on port ${PORT}`);
+  console.log('Available calendar endpoints:');
+  console.log('  GET  /calendar/calendars       - List all calendars');
+  console.log('  GET  /calendar/events          - List events');
+  console.log('  GET  /calendar/events/today    - Get today\'s events');
+  console.log('  GET  /calendar/events/week     - Get week events');
+  console.log('  GET  /calendar/events/search   - Search events');
+  console.log('  POST /calendar/events          - Create event');
+  console.log('  PUT  /calendar/events/:id      - Update event');
+  console.log('  DELETE /calendar/events/:id    - Delete event');
+  console.log('  POST /calendar/freebusy        - Get free/busy info');
+  console.log('  POST /calendar/availability    - Find available slots');
+  console.log('  GET  /calendar/availability/next - Find next slot');
+  console.log('  GET  /calendar/status          - Service status');
+  console.log('  GET  /calendar/health          - Health check');
 });
 

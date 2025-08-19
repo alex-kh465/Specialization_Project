@@ -95,6 +95,87 @@ interface NewEvent {
 const API_URL = 'http://localhost:4000';
 const getToken = () => (typeof window !== 'undefined' ? localStorage.getItem('token') : '');
 
+// Helper function to parse calendars from MCP message format
+const parseCalendarsFromMessage = (message: string): Calendar[] => {
+  const calendars: Calendar[] = [];
+  
+  // Split the message by double newlines to get calendar blocks
+  const blocks = message.split('\n\n').filter(block => block.trim());
+  
+  for (const block of blocks) {
+    const lines = block.split('\n');
+    const titleLine = lines[0];
+    
+    // Extract calendar info from title line format: "Name (email@domain.com)"
+    if (titleLine && titleLine.includes('(') && titleLine.includes(')')) {
+      const match = titleLine.match(/^(.+?)\s*\(([^)]+)\)$/);
+      if (match) {
+        const [, summary, id] = match;
+        const isPrimary = titleLine.includes('PRIMARY');
+        
+        calendars.push({
+          id: id.trim(),
+          summary: summary.trim(),
+          primary: isPrimary,
+          selected: isPrimary // Default selection for primary
+        });
+      }
+    }
+  }
+  
+  return calendars;
+};
+
+// Helper function to parse events from MCP message format
+const parseEventsFromMessage = (message: string): GoogleCalendarEvent[] => {
+  const events: GoogleCalendarEvent[] = [];
+  
+  if (message.includes('Found ') && message.includes('event(s):')) {
+    const eventBlocks = message.split(/\n\n\d+\. /).slice(1);
+    
+    for (const block of eventBlocks) {
+      const lines = block.split('\n');
+      const eventLine = lines[0];
+      
+      if (eventLine && eventLine.startsWith('Event: ')) {
+        const summary = eventLine.replace('Event: ', '');
+        const idLine = lines.find(l => l.startsWith('Event ID: '));
+        const descLine = lines.find(l => l.startsWith('Description: '));
+        const startLine = lines.find(l => l.startsWith('Start: '));
+        const endLine = lines.find(l => l.startsWith('End: '));
+        const locationLine = lines.find(l => l.startsWith('Location: '));
+        const viewLine = lines.find(l => l.startsWith('View: '));
+        
+        if (idLine && startLine && endLine) {
+          // Parse date strings from "Mon, Jan 01, 2024, 10:00 AM GMT+5:30" format
+          const parseDateTime = (dateStr: string) => {
+            const cleanStr = dateStr.replace(/ GMT.*$/, '');
+            return new Date(cleanStr).toISOString();
+          };
+          
+          events.push({
+            id: idLine.replace('Event ID: ', ''),
+            summary,
+            description: descLine ? descLine.replace('Description: ', '') : '',
+            start: {
+              dateTime: parseDateTime(startLine.replace('Start: ', '')),
+              timeZone: 'Asia/Kolkata'
+            },
+            end: {
+              dateTime: parseDateTime(endLine.replace('End: ', '')),
+              timeZone: 'Asia/Kolkata'
+            },
+            location: locationLine ? locationLine.replace('Location: ', '') : '',
+            htmlLink: viewLine ? viewLine.replace('View: ', '') : ''
+          });
+        }
+      }
+    }
+  }
+  
+  return events;
+};
+
 const MCPCalendar: React.FC = () => {
   // State for MCP Calendar features
   const [googleEvents, setGoogleEvents] = useState<GoogleCalendarEvent[]>([]);
@@ -129,7 +210,7 @@ const MCPCalendar: React.FC = () => {
   
   const { toast } = useToast();
 
-  // MCP Calendar API Functions
+  // Calendar API Functions using new endpoints
   const fetchMCPCalendars = async () => {
     try {
       const token = getToken();
@@ -138,7 +219,29 @@ const MCPCalendar: React.FC = () => {
       });
       if (response.ok) {
         const data = await response.json();
-        setCalendars(data.items || []);
+        console.log('Calendars response:', data);
+        // Handle multiple MCP response formats
+        let calendarsArray = [];
+        if (data.calendars && Array.isArray(data.calendars)) {
+          // Direct structured response from MCP
+          calendarsArray = data.calendars;
+        } else if (data.data && Array.isArray(data.data)) {
+          // Backend wrapped response
+          calendarsArray = data.data;
+        } else if (data.items && Array.isArray(data.items)) {
+          // Google Calendar API format
+          calendarsArray = data.items;
+        } else if (data.message && typeof data.message === 'string') {
+          // Parse text-based calendar list from MCP
+          calendarsArray = parseCalendarsFromMessage(data.message);
+        } else {
+          console.log('Unexpected calendar response format:', data);
+          console.log('Available keys:', Object.keys(data));
+        }
+        console.log('Parsed calendars:', calendarsArray.length);
+        setCalendars(calendarsArray);
+      } else {
+        console.error('Failed to fetch calendars:', response.statusText);
       }
     } catch (error) {
       console.error('Failed to fetch calendars:', error);
@@ -166,7 +269,27 @@ const MCPCalendar: React.FC = () => {
       
       if (response.ok) {
         const data = await response.json();
-        setGoogleEvents(data.items || []);
+        console.log('Events response:', data);
+        // Handle multiple MCP response formats
+        let eventsArray = [];
+        if (data.events && Array.isArray(data.events)) {
+          // Direct structured response from MCP
+          eventsArray = data.events;
+        } else if (data.data && Array.isArray(data.data)) {
+          // Backend wrapped response
+          eventsArray = data.data;
+        } else if (data.items && Array.isArray(data.items)) {
+          // Google Calendar API format
+          eventsArray = data.items;
+        } else if (data.message && typeof data.message === 'string') {
+          // Parse text-based events list from MCP
+          eventsArray = parseEventsFromMessage(data.message);
+        } else {
+          console.log('Unexpected events response format:', data);
+          console.log('Available keys:', Object.keys(data));
+        }
+        console.log('Parsed events:', eventsArray.length);
+        setGoogleEvents(eventsArray);
       } else {
         throw new Error('Failed to fetch Google Calendar events');
       }
@@ -190,7 +313,7 @@ const MCPCalendar: React.FC = () => {
       });
       if (response.ok) {
         const data = await response.json();
-        setColors(data.event || {});
+        setColors(data.event || data.data?.event || {});
       }
     } catch (error) {
       console.error('Failed to fetch colors:', error);
@@ -214,16 +337,35 @@ const MCPCalendar: React.FC = () => {
         timeZone: 'Asia/Kolkata'
       });
       
-      const response = await fetch(`${API_URL}/calendar/mcp/search?${params}`, {
+      const response = await fetch(`${API_URL}/calendar/mcp/search?query=${encodeURIComponent(searchQuery)}&${params}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       
       if (response.ok) {
         const data = await response.json();
-        setGoogleEvents(data.items || []);
+        console.log('Search response:', data);
+        // Handle multiple MCP response formats for search
+        let eventsArray = [];
+        if (data.events && Array.isArray(data.events)) {
+          // Direct structured response from MCP
+          eventsArray = data.events;
+        } else if (data.data && Array.isArray(data.data)) {
+          // Backend wrapped response
+          eventsArray = data.data;
+        } else if (data.items && Array.isArray(data.items)) {
+          // Google Calendar API format
+          eventsArray = data.items;
+        } else if (data.message && typeof data.message === 'string') {
+          eventsArray = parseEventsFromMessage(data.message);
+        } else {
+          console.log('Unexpected search response format:', data);
+          console.log('Available keys:', Object.keys(data));
+        }
+        console.log('Search results:', eventsArray.length);
+        setGoogleEvents(eventsArray);
         toast({
           title: "Search Complete",
-          description: `Found ${data.items?.length || 0} events`
+          description: `Found ${eventsArray.length} events`
         });
       }
     } catch (error) {
@@ -250,20 +392,20 @@ const MCPCalendar: React.FC = () => {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          calendars: selectedCalendars,
-          timeMin: now.toISOString().slice(0, 19),
-          timeMax: tomorrow.toISOString().slice(0, 19),
-          duration: 60,
+          calendars: [selectedCalendars[0] || 'primary'],
+          timeMin: now.toISOString(),
+          timeMax: tomorrow.toISOString(),
           timeZone: 'Asia/Kolkata'
         })
       });
       
       if (response.ok) {
         const data = await response.json();
-        setAvailableSlots(data.availableSlots || []);
+        const slots = data.availableSlots || data.data?.availableSlots || [];
+        setAvailableSlots(slots);
         toast({
           title: "Availability Found",
-          description: `Found ${data.availableSlots?.length || 0} available slots`
+          description: `Found ${slots.length} available slots`
         });
       }
     } catch (error) {
@@ -291,9 +433,10 @@ const MCPCalendar: React.FC = () => {
       });
       
       if (response.ok) {
+        const data = await response.json();
         toast({
           title: "Event Created",
-          description: "Your event has been added to Google Calendar"
+          description: data.message || "Your event has been added to Google Calendar"
         });
         setShowAddModal(false);
         setNewEvent({
@@ -308,7 +451,8 @@ const MCPCalendar: React.FC = () => {
         });
         fetchMCPEvents();
       } else {
-        throw new Error('Failed to create event');
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to create event');
       }
     } catch (error: any) {
       toast({
@@ -330,16 +474,20 @@ const MCPCalendar: React.FC = () => {
       });
       
       if (response.ok) {
+        const data = await response.json();
         toast({
           title: "Event Deleted",
-          description: "The event has been removed from your calendar"
+          description: data.message || "The event has been removed from your calendar"
         });
         fetchMCPEvents();
+      } else {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to delete event');
       }
-    } catch (error) {
+    } catch (error: any) {
       toast({
         title: "Delete Failed",
-        description: "Failed to delete the event",
+        description: error.message || "Failed to delete the event",
         variant: "destructive"
       });
     }
@@ -371,9 +519,10 @@ const MCPCalendar: React.FC = () => {
       });
       
       if (response.ok) {
+        const data = await response.json();
         toast({
           title: "Event Updated",
-          description: "Your event has been updated successfully"
+          description: data.message || "Your event has been updated successfully"
         });
         setEditingEvent(null);
         setNewEvent({
@@ -388,7 +537,8 @@ const MCPCalendar: React.FC = () => {
         });
         fetchMCPEvents();
       } else {
-        throw new Error('Failed to update event');
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to update event');
       }
     } catch (error: any) {
       toast({

@@ -123,6 +123,21 @@ class MCPCalendarClient {
     return true;
   }
 
+  // Utility function to ensure proper ISO 8601 format with UTC timezone
+  toIso8601(dateValue) {
+    if (!dateValue) return null;
+
+    try {
+      const date = new Date(dateValue);
+      // Always return ISO string in UTC with "Z" timezone, strip milliseconds for consistency
+      const isoString = date.toISOString();
+      return isoString.substring(0, 19) + 'Z'; // Remove .sssZ and add Z
+    } catch (error) {
+      console.warn('Invalid date value:', dateValue, 'Error:', error.message);
+      return null;
+    }
+  }
+
   // Calendar operations using the MCP server
   async listCalendars() {
     const connected = await this.ensureConnected();
@@ -152,8 +167,24 @@ class MCPCalendarClient {
     try {
       const args = { calendarId };
       
-      if (timeMin) args.timeMin = timeMin;
-      if (timeMax) args.timeMax = timeMax;
+      // Set default time range if not provided (list events may need these parameters)
+      if (!timeMin) {
+        const now = new Date();
+        timeMin = this.toIso8601(now.toISOString());
+      } else {
+        timeMin = this.toIso8601(timeMin);
+      }
+      
+      if (!timeMax) {
+        const oneWeek = new Date();
+        oneWeek.setDate(oneWeek.getDate() + 7);
+        timeMax = this.toIso8601(oneWeek.toISOString());
+      } else {
+        timeMax = this.toIso8601(timeMax);
+      }
+      
+      args.timeMin = timeMin;
+      args.timeMax = timeMax;
       if (timeZone) args.timeZone = timeZone;
 
       const result = await this.client.callTool({
@@ -175,15 +206,29 @@ class MCPCalendarClient {
     }
     
     try {
+      // Set default time range if not provided (search needs these parameters)
+      if (!timeMin) {
+        const now = new Date();
+        timeMin = this.toIso8601(now.toISOString());
+      } else {
+        timeMin = this.toIso8601(timeMin);
+      }
+      
+      if (!timeMax) {
+        const nextMonth = new Date();
+        nextMonth.setMonth(nextMonth.getMonth() + 1);
+        timeMax = this.toIso8601(nextMonth.toISOString());
+      } else {
+        timeMax = this.toIso8601(timeMax);
+      }
+      
       const args = {
         calendarId,
         query,
+        timeMin,
+        timeMax,
         timeZone
       };
-      
-      // Only add timeMin and timeMax if they are not null/undefined
-      if (timeMin) args.timeMin = timeMin;
-      if (timeMax) args.timeMax = timeMax;
       
       const result = await this.client.callTool({
         name: 'search-events',
@@ -208,8 +253,8 @@ class MCPCalendarClient {
         calendarId: eventData.calendarId || 'primary',
         summary: eventData.title || eventData.summary,
         description: eventData.description || '',
-        start: eventData.start,
-        end: eventData.end,
+        start: this.toIso8601(eventData.start),
+        end: this.toIso8601(eventData.end),
         timeZone: eventData.timeZone || 'Asia/Kolkata'
       };
 
@@ -247,8 +292,8 @@ class MCPCalendarClient {
       // Add fields to update
       if (eventData.title || eventData.summary) args.summary = eventData.title || eventData.summary;
       if (eventData.description) args.description = eventData.description;
-      if (eventData.start) args.start = eventData.start;
-      if (eventData.end) args.end = eventData.end;
+      if (eventData.start) args.start = this.toIso8601(eventData.start);
+      if (eventData.end) args.end = this.toIso8601(eventData.end);
       if (eventData.timeZone) args.timeZone = eventData.timeZone;
       if (eventData.location) args.location = eventData.location;
       if (eventData.attendees) args.attendees = eventData.attendees;
@@ -257,8 +302,8 @@ class MCPCalendarClient {
       if (eventData.recurrence) args.recurrence = eventData.recurrence;
       if (eventData.sendUpdates) args.sendUpdates = eventData.sendUpdates;
       if (eventData.modificationScope) args.modificationScope = eventData.modificationScope;
-      if (eventData.originalStartTime) args.originalStartTime = eventData.originalStartTime;
-      if (eventData.futureStartDate) args.futureStartDate = eventData.futureStartDate;
+      if (eventData.originalStartTime) args.originalStartTime = this.toIso8601(eventData.originalStartTime);
+      if (eventData.futureStartDate) args.futureStartDate = this.toIso8601(eventData.futureStartDate);
 
       const result = await this.client.callTool({
         name: 'update-event',
@@ -306,8 +351,8 @@ class MCPCalendarClient {
         name: 'get-freebusy',
         arguments: {
           calendars: calendars.map(cal => ({ id: cal })),
-          timeMin,
-          timeMax,
+          timeMin: this.toIso8601(timeMin),
+          timeMax: this.toIso8601(timeMax),
           timeZone
         }
       });
@@ -365,9 +410,13 @@ class MCPCalendarClient {
     if (result.content && result.content.length > 0) {
       const content = result.content[0];
       if (content.type === 'text') {
+        console.log('MCP Tool Result:', content.text.substring(0, 200) + '...');
         try {
-          return JSON.parse(content.text);
+          const parsed = JSON.parse(content.text);
+          console.log('Successfully parsed JSON result');
+          return parsed;
         } catch (e) {
+          console.log('Failed to parse as JSON, returning as message format');
           return { message: content.text };
         }
       }
