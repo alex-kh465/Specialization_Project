@@ -1,4 +1,4 @@
-import { calendarClient } from './calendar-client.js';
+import { calendarClient } from './core/calendar-client.js';
 
 // Initialize the calendar client
 async function initialize() {

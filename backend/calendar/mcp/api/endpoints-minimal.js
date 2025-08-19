@@ -1,4 +1,4 @@
-import { calendarMCP } from './calendar/mcp/index.js';
+import { calendarMCP } from '../index.js';
 
 // Note: calendarMCP is already initialized in index.js
 
@@ -57,7 +57,11 @@ export function setupCalendarEndpoints(app, authenticate) {
         timeZone = 'Asia/Kolkata' 
       } = req.query;
 
-      const result = await calendarMCP.listEvents(calendarId, timeMin, timeMax, timeZone);
+      const result = await calendarMCP.listEvents(calendarId, {
+        timeMin,
+        timeMax,
+        timeZone
+      });
       res.json({ 
         success: true, 
         data: result, 
@@ -85,9 +89,11 @@ export function setupCalendarEndpoints(app, authenticate) {
       
       const result = await calendarMCP.listEvents(
         calendarId, 
-        startOfDay.toISOString(), 
-        endOfDay.toISOString(), 
-        timeZone
+        {
+          timeMin: startOfDay.toISOString(), 
+          timeMax: endOfDay.toISOString(), 
+          timeZone
+        }
       );
       
       res.json({ 
@@ -117,9 +123,11 @@ export function setupCalendarEndpoints(app, authenticate) {
       
       const result = await calendarMCP.listEvents(
         calendarId, 
-        weekStart.toISOString(), 
-        weekEnd.toISOString(), 
-        timeZone
+        {
+          timeMin: weekStart.toISOString(), 
+          timeMax: weekEnd.toISOString(), 
+          timeZone
+        }
       );
       
       res.json({ 
@@ -156,7 +164,11 @@ export function setupCalendarEndpoints(app, authenticate) {
         });
       }
 
-      const result = await calendarMCP.searchEvents(calendarId, query, timeMin, timeMax, timeZone);
+      const result = await calendarMCP.searchEvents(calendarId, query, {
+        timeMin,
+        timeMax,
+        timeZone
+      });
       res.json({ 
         success: true, 
         data: result, 

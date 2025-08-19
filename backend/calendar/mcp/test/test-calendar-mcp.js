@@ -1,4 +1,4 @@
-import { calendarMCP } from './calendar/mcp/index.js';
+import { calendarMCP } from '../index.js';
 
 async function testCalendarMCP() {
   console.log('🧪 Testing Calendar MCP functionality...\n');

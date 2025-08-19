@@ -43,7 +43,7 @@ export class CalendarClient {
     if (!this.api.isAuthenticated) {
       // Try to use existing tokens from the MCP server
       try {
-        const existingTokenPath = path.join(__dirname, '..', 'google-calendar-mcp', '.tokens.json');
+        const existingTokenPath = path.join(__dirname, '..', 'config', 'tokens.json');
         const backupTokenPath = path.join(__dirname, '..', '..', '.google-tokens.json');
         
         let tokens = null;
@@ -545,8 +545,15 @@ export class CalendarClient {
       throw new Error('Event data is required');
     }
     
-    if (!eventData.summary && !eventData.title) {
+    // Allow both title and summary fields
+    const title = eventData.summary || eventData.title;
+    if (!title) {
       throw new Error('Event title/summary is required');
+    }
+    
+    // Normalize to summary field for Google Calendar API
+    if (!eventData.summary && eventData.title) {
+      eventData.summary = eventData.title;
     }
     
     if (!eventData.start) {

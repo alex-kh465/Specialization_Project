@@ -6,7 +6,7 @@ import jwt from 'jsonwebtoken';
 import fetch from 'node-fetch';
 import * as chrono from 'chrono-node';
 import { calendarMCP } from './calendar/mcp/index.js';
-import { setupCalendarEndpoints } from './calendar-endpoints-minimal.js';
+import { setupCalendarEndpoints } from './calendar/mcp/api/endpoints-minimal.js';
 
 
 // Load environment variables
@@ -547,12 +547,26 @@ For non-calendar requests, respond normally as an academic assistant.`
         try {
           switch (operationData.type) {
             case 'calendar_create':
-              calendarResult = await calendarMCP.createEvent(operationData.event);
-              const startDate = new Date(operationData.event.start);
-              const endDate = new Date(operationData.event.end);
-              responseMessage = calendarResult ? 
-                `✅ **Event created successfully!**\n\n📅 **${operationData.event.title}**\n📍 ${operationData.event.location || 'No location specified'}\n🕐 ${startDate.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} - ${endDate.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })}\n\n${operationData.event.description ? '📝 ' + operationData.event.description : ''}` :
-                `❌ Failed to create event. ${operationData.message}`;
+              // Map the event data to the correct format
+              const eventData = {
+                summary: operationData.event.title || operationData.event.summary,
+                description: operationData.event.description || '',
+                start: operationData.event.start,
+                end: operationData.event.end,
+                location: operationData.event.location || '',
+                calendarId: operationData.event.calendarId || 'primary',
+                attendees: operationData.event.attendees || []
+              };
+              
+              calendarResult = await calendarMCP.createEvent(eventData);
+              
+              if (calendarResult && calendarResult.success) {
+                const startDate = new Date(operationData.event.start);
+                const endDate = new Date(operationData.event.end);
+                responseMessage = `✅ **Event created successfully!**\n\n📅 **${eventData.summary}**\n📍 ${eventData.location || 'No location specified'}\n🕐 ${startDate.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} - ${endDate.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })}\n\n${eventData.description ? '📝 ' + eventData.description : ''}`;
+              } else {
+                responseMessage = `❌ Failed to create event. ${calendarResult?.error || calendarResult?.message || 'Unknown error'}`;
+              }
               break;
               
             case 'calendar_list':
@@ -582,9 +596,11 @@ For non-calendar requests, respond normally as an academic assistant.`
               
               calendarResult = await calendarMCP.listEvents(
                 listParams.calendarId || 'primary',
-                listTimeMin,
-                listTimeMax,
-                'Asia/Kolkata'
+                {
+                  timeMin: listTimeMin,
+                  timeMax: listTimeMax,
+                  timeZone: 'Asia/Kolkata'
+                }
               );
               const events = calendarResult?.events || [];
               responseMessage = events.length > 0 ? 
@@ -625,9 +641,11 @@ For non-calendar requests, respond normally as an academic assistant.`
               calendarResult = await calendarMCP.searchEvents(
                 'primary',
                 searchParams.query,
-                searchTimeMin,
-                searchTimeMax,
-                'Asia/Kolkata'
+                {
+                  timeMin: searchTimeMin,
+                  timeMax: searchTimeMax,
+                  timeZone: 'Asia/Kolkata'
+                }
               );
               const searchEvents = calendarResult?.events || [];
               responseMessage = searchEvents.length > 0 ? 
@@ -651,9 +669,11 @@ For non-calendar requests, respond normally as an academic assistant.`
               const searchResult = await calendarMCP.searchEvents(
                 'primary',
                 updateParams.searchQuery,
-                updateParams.timeMin || todayStart,
-                updateParams.timeMax || todayEnd,
-                'Asia/Kolkata'
+                {
+                  timeMin: updateParams.timeMin || todayStart,
+                  timeMax: updateParams.timeMax || todayEnd,
+                  timeZone: 'Asia/Kolkata'
+                }
               );
               const foundEvents = searchResult?.events || [];
               
@@ -685,9 +705,11 @@ For non-calendar requests, respond normally as an academic assistant.`
               const deleteSearchResult = await calendarMCP.searchEvents(
                 'primary',
                 deleteParams.searchQuery,
-                deleteParams.timeMin || deleteTodayStart,
-                deleteParams.timeMax || deleteTodayEnd,
-                'Asia/Kolkata'
+                {
+                  timeMin: deleteParams.timeMin || deleteTodayStart,
+                  timeMax: deleteParams.timeMax || deleteTodayEnd,
+                  timeZone: 'Asia/Kolkata'
+                }
               );
               const eventsToDelete = deleteSearchResult?.events || [];
               
@@ -1358,8 +1380,31 @@ app.post('/ai/debug-calendar', authenticate, async (req, res) => {
 
 // Helper function to format MCP responses for frontend consistency
 const formatMCPResponse = (mcpResult, type = 'unknown') => {
+  console.log('formatMCPResponse called with:', { type, result: mcpResult });
+  
+  // First check if mcpResult already has the structured data we need
+  if (mcpResult && typeof mcpResult === 'object') {
+    // For calendars: check if it already has the calendars array
+    if (type === 'calendars' && mcpResult.calendars && Array.isArray(mcpResult.calendars)) {
+      console.log('Returning structured calendars response');
+      return mcpResult;
+    }
+    
+    // For events: check if it already has the events array
+    if (type === 'events' && mcpResult.events && Array.isArray(mcpResult.events)) {
+      console.log('Returning structured events response');
+      return mcpResult;
+    }
+    
+    // For colors: check if it already has the colors structure
+    if (type === 'colors' && (mcpResult.colors || mcpResult.event)) {
+      console.log('Returning structured colors response');
+      return mcpResult;
+    }
+  }
+  
   // If mcpResult has a message property (plain text response), try to extract structured data
-  if (mcpResult.message && typeof mcpResult.message === 'string') {
+  if (mcpResult && mcpResult.message && typeof mcpResult.message === 'string') {
     const message = mcpResult.message;
     
     switch (type) {
@@ -1476,8 +1521,11 @@ const formatMCPResponse = (mcpResult, type = 'unknown') => {
 // List all calendars
 app.get('/calendar/mcp/calendars', authenticate, async (req, res) => {
   try {
+    console.log('=== DEBUG: Calendar MCP listCalendars() called ===');
     const calendars = await calendarMCP.listCalendars();
+    console.log('=== DEBUG: Raw calendars response:', JSON.stringify(calendars, null, 2));
     const formattedResponse = formatMCPResponse(calendars, 'calendars');
+    console.log('=== DEBUG: Formatted response:', JSON.stringify(formattedResponse, null, 2));
     res.json(formattedResponse);
   } catch (err) {
     console.error('MCP list calendars error:', err);
@@ -1503,11 +1551,25 @@ app.get('/calendar/mcp/events', authenticate, async (req, res) => {
       timeZone = 'Asia/Kolkata' 
     } = req.query;
     
-    // Apply proper ISO 8601 formatting
-    const formattedTimeMin = timeMin ? calendarMCP.toIso8601(timeMin) : timeMin;
-    const formattedTimeMax = timeMax ? calendarMCP.toIso8601(timeMax) : timeMax;
+    // Apply proper ISO 8601 formatting  
+    const toIso8601 = (dateValue) => {
+      if (!dateValue) return null;
+      try {
+        const date = new Date(dateValue);
+        return date.toISOString();
+      } catch (error) {
+        console.warn('Invalid date value:', dateValue);
+        return null;
+      }
+    };
+    const formattedTimeMin = timeMin ? toIso8601(timeMin) : timeMin;
+    const formattedTimeMax = timeMax ? toIso8601(timeMax) : timeMax;
     
-    const events = await calendarMCP.listEvents(calendarId, formattedTimeMin, formattedTimeMax, timeZone);
+    const events = await calendarMCP.listEvents(calendarId, {
+      timeMin: formattedTimeMin,
+      timeMax: formattedTimeMax,
+      timeZone
+    });
     const formattedResponse = formatMCPResponse(events, 'events');
     res.json(formattedResponse);
   } catch (err) {
@@ -1535,10 +1597,24 @@ app.get('/calendar/mcp/search', authenticate, async (req, res) => {
     }
     
     // Apply proper ISO 8601 formatting
-    const formattedTimeMin = timeMin ? calendarMCP.toIso8601(timeMin) : timeMin;
-    const formattedTimeMax = timeMax ? calendarMCP.toIso8601(timeMax) : timeMax;
+    const toIso8601 = (dateValue) => {
+      if (!dateValue) return null;
+      try {
+        const date = new Date(dateValue);
+        return date.toISOString();
+      } catch (error) {
+        console.warn('Invalid date value:', dateValue);
+        return null;
+      }
+    };
+    const formattedTimeMin = timeMin ? toIso8601(timeMin) : timeMin;
+    const formattedTimeMax = timeMax ? toIso8601(timeMax) : timeMax;
     
-    const events = await calendarMCP.searchEvents(calendarId, query, formattedTimeMin, formattedTimeMax, timeZone);
+    const events = await calendarMCP.searchEvents(calendarId, query, {
+      timeMin: formattedTimeMin,
+      timeMax: formattedTimeMax,
+      timeZone
+    });
     const formattedResponse = formatMCPResponse(events, 'events');
     res.json(formattedResponse);
   } catch (err) {

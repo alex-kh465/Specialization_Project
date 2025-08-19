@@ -14,8 +14,8 @@ export class GoogleCalendarAPI {
     this.isAuthenticated = false;
     
     // Use the MCP credentials and tokens
-    this.credentialsPath = path.join(__dirname, 'gcp-oauth.keys.json');
-    this.tokenPath = path.join(__dirname, 'tokens.json');
+    this.credentialsPath = path.join(__dirname, '..', 'config', 'gcp-oauth.keys.json');
+    this.tokenPath = path.join(__dirname, '..', 'config', 'tokens.json');
   }
 
   async initialize() {
@@ -212,16 +212,42 @@ export class GoogleCalendarAPI {
         throw new Error('Summary, start time, and end time are required');
       }
 
+      // Normalize datetime formats to full ISO 8601
+      const normalizeDateTime = (dateTime) => {
+        if (!dateTime) return null;
+        
+        try {
+          const date = new Date(dateTime);
+          if (isNaN(date.getTime())) {
+            throw new Error('Invalid date');
+          }
+          
+          // Ensure full ISO format with timezone
+          const isoString = date.toISOString();
+          return isoString;
+        } catch (error) {
+          console.error('DateTime normalization failed:', dateTime, error);
+          throw new Error(`Invalid datetime format: ${dateTime}`);
+        }
+      };
+
+      const normalizedStart = normalizeDateTime(start);
+      const normalizedEnd = normalizeDateTime(end);
+      
+      if (!normalizedStart || !normalizedEnd) {
+        throw new Error('Could not normalize start or end time');
+      }
+
       // Prepare event object
       const event = {
         summary,
         description,
         start: {
-          dateTime: start,
+          dateTime: normalizedStart,
           timeZone
         },
         end: {
-          dateTime: end,
+          dateTime: normalizedEnd,
           timeZone
         },
         reminders
