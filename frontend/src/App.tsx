@@ -6,7 +6,7 @@ import { BrowserRouter, Routes, Route, useLocation, useNavigate } from "react-ro
 import Layout from "./components/layout/Layout";
 import Dashboard from "./pages/Dashboard";
 import Chat from "./pages/Chat";
-import Calendar from "./pages/Calendar";
+import MCPCalendar from "./pages/MCPCalendar";
 import Emails from "./pages/Emails";
 import Weather from "./pages/Weather";
 import Payments from "./pages/Payments";
@@ -68,7 +68,7 @@ const App = () => (
                 <Routes>
                   <Route path="/" element={<Dashboard />} />
                   <Route path="/chat" element={<Chat />} />
-                  <Route path="/calendar" element={<Calendar />} />
+                  <Route path="/calendar" element={<MCPCalendar />} />
                   <Route path="/emails" element={<Emails />} />
                   <Route path="/weather" element={<Weather />} />
                   <Route path="/payments" element={<Payments />} />

@@ -13,6 +13,11 @@ import { homedir } from 'os';
  * Uses XDG Base Directory specification on Unix-like systems
  */
 export function getSecureTokenPath() {
+  // Check for custom token path first
+  if (process.env.GOOGLE_CALENDAR_MCP_TOKEN_PATH) {
+    return path.resolve(process.env.GOOGLE_CALENDAR_MCP_TOKEN_PATH);
+  }
+  
   const configDir = process.env.XDG_CONFIG_HOME || path.join(homedir(), '.config');
   return path.join(configDir, 'google-calendar-mcp', 'tokens.json');
 }
