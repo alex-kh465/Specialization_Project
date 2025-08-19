@@ -436,6 +436,15 @@ IMPORTANT: For event creation requests:
 - For "tomorrow at 3pm", use tomorrow's date with 15:00 time
 - Always create the event rather than asking for more details
 
+CRITICAL - GOOGLE CALENDAR API DATETIME FORMAT REQUIREMENTS:
+- ALWAYS use complete RFC3339/ISO 8601 format with timezone: "YYYY-MM-DDTHH:MM:SS.000Z"
+- Examples: "2025-08-20T15:00:00.000Z", "2025-08-21T09:30:00.000Z"
+- NEVER use incomplete formats like "2025-08-20T15:00" or "2025-08-20T15:00:00"
+- For times: 15:00:00.000Z for 3pm, 09:00:00.000Z for 9am, 18:00:00.000Z for 6pm
+- Always include .000Z timezone suffix - this is REQUIRED by Google Calendar API
+- Convert local time to UTC: for India (Asia/Kolkata = UTC+5:30), subtract 5.5 hours
+- Example: 3pm IST = 9:30am UTC = "2025-08-20T09:30:00.000Z"
+
 For non-calendar requests, respond normally as an academic assistant.`
 
     const groqRes = await fetch(process.env.GROQ_API_URL, {
@@ -547,16 +556,50 @@ For non-calendar requests, respond normally as an academic assistant.`
         try {
           switch (operationData.type) {
             case 'calendar_create':
-              // Map the event data to the correct format
+              // Map the event data to the correct format with datetime validation
+              const normalizeDateTime = (dateTimeStr) => {
+                if (!dateTimeStr) return null;
+                try {
+                  // Handle various datetime formats and ensure complete ISO format
+                  let dateTime = dateTimeStr;
+                  
+                  // If missing seconds, add them
+                  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(dateTime)) {
+                    dateTime += ':00';
+                  }
+                  
+                  // Create date object and return ISO string
+                  const date = new Date(dateTime);
+                  if (isNaN(date.getTime())) {
+                    throw new Error('Invalid date');
+                  }
+                  
+                  return date.toISOString();
+                } catch (error) {
+                  console.error('DateTime normalization failed:', dateTimeStr, error);
+                  return null;
+                }
+              };
+              
+              const normalizedStart = normalizeDateTime(operationData.event.start);
+              const normalizedEnd = normalizeDateTime(operationData.event.end);
+              
+              if (!normalizedStart || !normalizedEnd) {
+                responseMessage = `❌ Invalid datetime format. Start: ${operationData.event.start}, End: ${operationData.event.end}`;
+                break;
+              }
+              
               const eventData = {
                 summary: operationData.event.title || operationData.event.summary,
                 description: operationData.event.description || '',
-                start: operationData.event.start,
-                end: operationData.event.end,
+                start: normalizedStart,
+                end: normalizedEnd,
                 location: operationData.event.location || '',
                 calendarId: operationData.event.calendarId || 'primary',
                 attendees: operationData.event.attendees || []
               };
+              
+              console.log('Normalized event data:', JSON.stringify(eventData, null, 2));
               
               calendarResult = await calendarMCP.createEvent(eventData);
               
@@ -580,18 +623,59 @@ For non-calendar requests, respond normally as an academic assistant.`
               if (!listTimeMin) {
                 const now = new Date();
                 listTimeMin = now.toISOString();
-              } else if (!listTimeMin.includes('T') || (!listTimeMin.includes('Z') && !listTimeMin.includes('+') && !listTimeMin.includes('-'))) {
-                // If AI provided incomplete format, convert to full ISO 8601
-                listTimeMin = new Date(listTimeMin).toISOString();
+              } else {
+                // Always normalize the datetime to proper ISO format
+                try {
+                  // If missing seconds, add them
+                  let normalizedTime = listTimeMin;
+                  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(normalizedTime)) {
+                    normalizedTime += ':00';
+                  }
+                  // If missing timezone, add UTC timezone
+                  if (!normalizedTime.includes('Z') && !normalizedTime.includes('+') && !normalizedTime.includes('-')) {
+                    normalizedTime += 'Z';
+                  }
+                  const date = new Date(normalizedTime);
+                  if (!isNaN(date.getTime())) {
+                    listTimeMin = date.toISOString();
+                  } else {
+                    throw new Error('Invalid date');
+                  }
+                } catch (error) {
+                  console.error('Failed to normalize timeMin:', listTimeMin, error);
+                  const now = new Date();
+                  listTimeMin = now.toISOString();
+                }
               }
               
               if (!listTimeMax) {
                 const oneWeek = new Date();
                 oneWeek.setDate(oneWeek.getDate() + 7);
                 listTimeMax = oneWeek.toISOString();
-              } else if (!listTimeMax.includes('T') || (!listTimeMax.includes('Z') && !listTimeMax.includes('+') && !listTimeMax.includes('-'))) {
-                // If AI provided incomplete format, convert to full ISO 8601
-                listTimeMax = new Date(listTimeMax).toISOString();
+              } else {
+                // Always normalize the datetime to proper ISO format
+                try {
+                  // If missing seconds, add them
+                  let normalizedTime = listTimeMax;
+                  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(normalizedTime)) {
+                    normalizedTime += ':00';
+                  }
+                  // If missing timezone, add UTC timezone
+                  if (!normalizedTime.includes('Z') && !normalizedTime.includes('+') && !normalizedTime.includes('-')) {
+                    normalizedTime += 'Z';
+                  }
+                  const date = new Date(normalizedTime);
+                  if (!isNaN(date.getTime())) {
+                    listTimeMax = date.toISOString();
+                  } else {
+                    throw new Error('Invalid date');
+                  }
+                } catch (error) {
+                  console.error('Failed to normalize timeMax:', listTimeMax, error);
+                  const oneWeek = new Date();
+                  oneWeek.setDate(oneWeek.getDate() + 7);
+                  listTimeMax = oneWeek.toISOString();
+                }
               }
               
               calendarResult = await calendarMCP.listEvents(
@@ -623,9 +707,29 @@ For non-calendar requests, respond normally as an academic assistant.`
               if (!searchTimeMin) {
                 const now = new Date();
                 searchTimeMin = now.toISOString();
-              } else if (!searchTimeMin.includes('T') || (!searchTimeMin.includes('Z') && !searchTimeMin.includes('+'))) {
-                // If AI provided incomplete format, convert to full ISO 8601
-                searchTimeMin = new Date(searchTimeMin).toISOString();
+              } else {
+                // Always normalize the datetime to proper ISO format
+                try {
+                  // If missing seconds, add them
+                  let normalizedTime = searchTimeMin;
+                  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(normalizedTime)) {
+                    normalizedTime += ':00';
+                  }
+                  // If missing timezone, add UTC timezone
+                  if (!normalizedTime.includes('Z') && !normalizedTime.includes('+') && !normalizedTime.includes('-')) {
+                    normalizedTime += 'Z';
+                  }
+                  const date = new Date(normalizedTime);
+                  if (!isNaN(date.getTime())) {
+                    searchTimeMin = date.toISOString();
+                  } else {
+                    throw new Error('Invalid date');
+                  }
+                } catch (error) {
+                  console.error('Failed to normalize searchTimeMin:', searchTimeMin, error);
+                  const now = new Date();
+                  searchTimeMin = now.toISOString();
+                }
               }
               
               // Ensure timeMax has proper timezone format
@@ -633,9 +737,30 @@ For non-calendar requests, respond normally as an academic assistant.`
                 const oneMonth = new Date();
                 oneMonth.setMonth(oneMonth.getMonth() + 1);
                 searchTimeMax = oneMonth.toISOString();
-              } else if (!searchTimeMax.includes('T') || (!searchTimeMax.includes('Z') && !searchTimeMax.includes('+'))) {
-                // If AI provided incomplete format, convert to full ISO 8601
-                searchTimeMax = new Date(searchTimeMax).toISOString();
+              } else {
+                // Always normalize the datetime to proper ISO format
+                try {
+                  // If missing seconds, add them
+                  let normalizedTime = searchTimeMax;
+                  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(normalizedTime)) {
+                    normalizedTime += ':00';
+                  }
+                  // If missing timezone, add UTC timezone
+                  if (!normalizedTime.includes('Z') && !normalizedTime.includes('+') && !normalizedTime.includes('-')) {
+                    normalizedTime += 'Z';
+                  }
+                  const date = new Date(normalizedTime);
+                  if (!isNaN(date.getTime())) {
+                    searchTimeMax = date.toISOString();
+                  } else {
+                    throw new Error('Invalid date');
+                  }
+                } catch (error) {
+                  console.error('Failed to normalize searchTimeMax:', searchTimeMax, error);
+                  const oneMonth = new Date();
+                  oneMonth.setMonth(oneMonth.getMonth() + 1);
+                  searchTimeMax = oneMonth.toISOString();
+                }
               }
               
               calendarResult = await calendarMCP.searchEvents(

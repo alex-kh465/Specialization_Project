@@ -120,21 +120,27 @@ export class GoogleCalendarAPI {
     this.ensureAuthenticated();
     
     try {
+      // Sanitize inputs
+      calendarId = this.sanitizeStringInput(calendarId, 'Calendar ID', true) || 'primary';
+      
       const {
-        timeMin = new Date().toISOString(),
-        timeMax = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), // 7 days from now
+        timeMin,
+        timeMax,
         maxResults = 50,
         timeZone = 'Asia/Kolkata'
       } = options;
-
+      
+      // Normalize time range with proper validation
+      const normalizedTimeRange = this.normalizeTimeRange(timeMin, timeMax);
+      
       const response = await this.calendar.events.list({
         calendarId,
-        timeMin,
-        timeMax,
-        maxResults,
+        timeMin: normalizedTimeRange.timeMin,
+        timeMax: normalizedTimeRange.timeMax,
+        maxResults: Math.min(Math.max(1, parseInt(maxResults) || 50), 2500), // Validate maxResults
         singleEvents: true,
         orderBy: 'startTime',
-        timeZone
+        timeZone: this.sanitizeStringInput(timeZone, 'Time Zone') || 'Asia/Kolkata'
       });
 
       return {
@@ -156,22 +162,35 @@ export class GoogleCalendarAPI {
     this.ensureAuthenticated();
     
     try {
+      // Sanitize and validate inputs
+      calendarId = this.sanitizeStringInput(calendarId, 'Calendar ID', true) || 'primary';
+      query = this.sanitizeStringInput(query, 'Search Query', true);
+      
       const {
-        timeMin = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(), // 30 days ago
-        timeMax = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(), // 30 days from now
+        timeMin,
+        timeMax,
         maxResults = 50,
         timeZone = 'Asia/Kolkata'
       } = options;
+      
+      // Normalize time range, default to broader range for search
+      const defaultTimeMin = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(); // 30 days ago
+      const defaultTimeMax = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(); // 30 days from now
+      
+      const normalizedTimeRange = this.normalizeTimeRange(
+        timeMin || defaultTimeMin,
+        timeMax || defaultTimeMax
+      );
 
       const response = await this.calendar.events.list({
         calendarId,
         q: query,
-        timeMin,
-        timeMax,
-        maxResults,
+        timeMin: normalizedTimeRange.timeMin,
+        timeMax: normalizedTimeRange.timeMax,
+        maxResults: Math.min(Math.max(1, parseInt(maxResults) || 50), 2500), // Validate maxResults
         singleEvents: true,
         orderBy: 'startTime',
-        timeZone
+        timeZone: this.sanitizeStringInput(timeZone, 'Time Zone') || 'Asia/Kolkata'
       });
 
       return {
@@ -196,6 +215,7 @@ export class GoogleCalendarAPI {
       const {
         calendarId = 'primary',
         summary,
+        title, // Alternative to summary
         description = '',
         start,
         end,
@@ -207,64 +227,67 @@ export class GoogleCalendarAPI {
         colorId = null
       } = eventData;
 
-      // Validate required fields
-      if (!summary || !start || !end) {
-        throw new Error('Summary, start time, and end time are required');
+      // Sanitize and validate inputs
+      const sanitizedCalendarId = this.sanitizeStringInput(calendarId, 'Calendar ID', true) || 'primary';
+      const sanitizedSummary = this.sanitizeStringInput(summary || title, 'Event Summary', true);
+      const sanitizedDescription = this.sanitizeStringInput(description, 'Description');
+      const sanitizedLocation = this.sanitizeStringInput(location, 'Location');
+      const sanitizedTimeZone = this.sanitizeStringInput(timeZone, 'Time Zone') || 'Asia/Kolkata';
+
+      // Validate and normalize datetime fields
+      if (!start || !end) {
+        throw new Error('Event start time and end time are required');
       }
 
-      // Normalize datetime formats to full ISO 8601
-      const normalizeDateTime = (dateTime) => {
-        if (!dateTime) return null;
-        
-        try {
-          const date = new Date(dateTime);
-          if (isNaN(date.getTime())) {
-            throw new Error('Invalid date');
-          }
-          
-          // Ensure full ISO format with timezone
-          const isoString = date.toISOString();
-          return isoString;
-        } catch (error) {
-          console.error('DateTime normalization failed:', dateTime, error);
-          throw new Error(`Invalid datetime format: ${dateTime}`);
-        }
-      };
-
-      const normalizedStart = normalizeDateTime(start);
-      const normalizedEnd = normalizeDateTime(end);
+      const normalizedStart = this.normalizeDateTime(start);
+      const normalizedEnd = this.normalizeDateTime(end);
       
-      if (!normalizedStart || !normalizedEnd) {
-        throw new Error('Could not normalize start or end time');
-      }
+      // Validate time range
+      this.validateTimeRange(normalizedStart, normalizedEnd);
 
-      // Prepare event object
+      // Prepare event object with sanitized inputs
       const event = {
-        summary,
-        description,
+        summary: sanitizedSummary,
+        description: sanitizedDescription,
         start: {
           dateTime: normalizedStart,
-          timeZone
+          timeZone: sanitizedTimeZone
         },
         end: {
           dateTime: normalizedEnd,
-          timeZone
+          timeZone: sanitizedTimeZone
         },
         reminders
       };
 
-      // Add optional fields
-      if (location) event.location = location;
-      if (attendees.length > 0) {
-        event.attendees = attendees.map(email => 
-          typeof email === 'string' ? { email } : email
-        );
+      // Add optional fields with validation
+      if (sanitizedLocation) {
+        event.location = sanitizedLocation;
       }
-      if (colorId) event.colorId = colorId;
-      if (recurrence) event.recurrence = recurrence;
+      
+      if (attendees && Array.isArray(attendees) && attendees.length > 0) {
+        event.attendees = attendees
+          .filter(email => {
+            const emailStr = typeof email === 'string' ? email : email?.email;
+            return emailStr && this.validateEmail(emailStr.trim());
+          })
+          .map(email => {
+            const emailStr = typeof email === 'string' ? email.trim() : email?.email?.trim();
+            return { email: emailStr };
+          });
+      }
+      
+      if (colorId !== null && colorId !== undefined) {
+        const sanitizedColorId = this.sanitizeStringInput(String(colorId), 'Color ID');
+        if (sanitizedColorId) event.colorId = sanitizedColorId;
+      }
+      
+      if (recurrence && Array.isArray(recurrence)) {
+        event.recurrence = recurrence.map(r => this.sanitizeStringInput(r, 'Recurrence Rule')).filter(r => r);
+      }
 
       const response = await this.calendar.events.insert({
-        calendarId,
+        calendarId: sanitizedCalendarId,
         resource: event,
         sendUpdates: 'all'
       });
@@ -272,7 +295,7 @@ export class GoogleCalendarAPI {
       return {
         success: true,
         event: response.data,
-        message: `Event "${summary}" created successfully`
+        message: `Event "${sanitizedSummary}" created successfully`
       };
     } catch (error) {
       console.error('Error creating event:', error);
@@ -304,14 +327,16 @@ export class GoogleCalendarAPI {
         sendUpdates = 'all'
       } = eventData;
 
-      if (!eventId) {
-        throw new Error('Event ID is required for update');
-      }
+      // Sanitize and validate inputs
+      const sanitizedCalendarId = this.sanitizeStringInput(calendarId, 'Calendar ID', true) || 'primary';
+      const sanitizedEventId = this.sanitizeStringInput(eventId, 'Event ID', true);
+      const sanitizedTimeZone = this.sanitizeStringInput(timeZone, 'Time Zone') || 'Asia/Kolkata';
+      const sanitizedSendUpdates = this.sanitizeStringInput(sendUpdates, 'Send Updates') || 'all';
 
       // Get the existing event first
       const existingResponse = await this.calendar.events.get({
-        calendarId,
-        eventId
+        calendarId: sanitizedCalendarId,
+        eventId: sanitizedEventId
       });
 
       const existingEvent = existingResponse.data;
@@ -319,39 +344,68 @@ export class GoogleCalendarAPI {
       // Prepare updated event object
       const updatedEvent = { ...existingEvent };
 
-      // Update only provided fields
-      if (summary !== undefined) updatedEvent.summary = summary;
-      if (description !== undefined) updatedEvent.description = description;
-      if (location !== undefined) updatedEvent.location = location;
-      if (colorId !== undefined) updatedEvent.colorId = colorId;
-      if (recurrence !== undefined) updatedEvent.recurrence = recurrence;
+      // Update only provided fields with validation
+      if (summary !== undefined) {
+        updatedEvent.summary = this.sanitizeStringInput(summary, 'Event Summary', true);
+      }
+      
+      if (description !== undefined) {
+        updatedEvent.description = this.sanitizeStringInput(description, 'Description');
+      }
+      
+      if (location !== undefined) {
+        updatedEvent.location = this.sanitizeStringInput(location, 'Location');
+      }
+      
+      if (colorId !== undefined) {
+        const sanitizedColorId = this.sanitizeStringInput(String(colorId), 'Color ID');
+        if (sanitizedColorId) updatedEvent.colorId = sanitizedColorId;
+      }
+      
+      if (recurrence !== undefined && Array.isArray(recurrence)) {
+        updatedEvent.recurrence = recurrence.map(r => this.sanitizeStringInput(r, 'Recurrence Rule')).filter(r => r);
+      }
+      
       if (reminders !== undefined) updatedEvent.reminders = reminders;
 
       if (start !== undefined) {
+        const normalizedStart = this.normalizeDateTime(start);
         updatedEvent.start = {
-          dateTime: start,
-          timeZone
+          dateTime: normalizedStart,
+          timeZone: sanitizedTimeZone
         };
       }
 
       if (end !== undefined) {
+        const normalizedEnd = this.normalizeDateTime(end);
         updatedEvent.end = {
-          dateTime: end,
-          timeZone
+          dateTime: normalizedEnd,
+          timeZone: sanitizedTimeZone
         };
+        
+        // Validate time range if both start and end are being updated
+        if (start !== undefined) {
+          this.validateTimeRange(updatedEvent.start.dateTime, updatedEvent.end.dateTime);
+        }
       }
 
-      if (attendees !== undefined) {
-        updatedEvent.attendees = attendees.map(email => 
-          typeof email === 'string' ? { email } : email
-        );
+      if (attendees !== undefined && Array.isArray(attendees)) {
+        updatedEvent.attendees = attendees
+          .filter(email => {
+            const emailStr = typeof email === 'string' ? email : email?.email;
+            return emailStr && this.validateEmail(emailStr.trim());
+          })
+          .map(email => {
+            const emailStr = typeof email === 'string' ? email.trim() : email?.email?.trim();
+            return { email: emailStr };
+          });
       }
 
       const response = await this.calendar.events.update({
-        calendarId,
-        eventId,
+        calendarId: sanitizedCalendarId,
+        eventId: sanitizedEventId,
         resource: updatedEvent,
-        sendUpdates
+        sendUpdates: sanitizedSendUpdates
       });
 
       return {
@@ -432,13 +486,35 @@ export class GoogleCalendarAPI {
     this.ensureAuthenticated();
     
     try {
-      const items = calendars.map(calId => ({ id: calId }));
+      // Validate inputs
+      if (!calendars || !Array.isArray(calendars) || calendars.length === 0) {
+        throw new Error('At least one calendar ID is required');
+      }
+      
+      if (!timeMin || !timeMax) {
+        throw new Error('Time range (timeMin and timeMax) is required');
+      }
+      
+      // Sanitize and validate calendar IDs
+      const sanitizedCalendars = calendars
+        .map(calId => this.sanitizeStringInput(calId, 'Calendar ID', true))
+        .filter(calId => calId);
+      
+      if (sanitizedCalendars.length === 0) {
+        throw new Error('No valid calendar IDs provided');
+      }
+      
+      // Normalize time range
+      const normalizedTimeRange = this.normalizeTimeRange(timeMin, timeMax);
+      const sanitizedTimeZone = this.sanitizeStringInput(timeZone, 'Time Zone') || 'Asia/Kolkata';
+      
+      const items = sanitizedCalendars.map(calId => ({ id: calId }));
 
       const response = await this.calendar.freebusy.query({
         resource: {
-          timeMin,
-          timeMax,
-          timeZone,
+          timeMin: normalizedTimeRange.timeMin,
+          timeMax: normalizedTimeRange.timeMax,
+          timeZone: sanitizedTimeZone,
           items
         }
       });
@@ -446,7 +522,7 @@ export class GoogleCalendarAPI {
       return {
         success: true,
         freebusy: response.data,
-        message: `Free/busy information retrieved for ${calendars.length} calendar(s)`
+        message: `Free/busy information retrieved for ${sanitizedCalendars.length} calendar(s)`
       };
     } catch (error) {
       console.error('Error getting free/busy information:', error);
@@ -594,20 +670,37 @@ export class GoogleCalendarAPI {
     this.ensureAuthenticated();
     
     try {
+      // Validate and sanitize inputs
+      const sanitizedCalendarId = this.sanitizeStringInput(calendarId, 'Calendar ID', true) || 'primary';
+      const sanitizedTimeZone = this.sanitizeStringInput(timeZone, 'Time Zone') || 'Asia/Kolkata';
+      
+      // Validate duration
+      const numericDuration = parseInt(duration) || 60;
+      if (numericDuration <= 0 || numericDuration > 1440) { // Max 24 hours
+        throw new Error('Duration must be between 1 and 1440 minutes (24 hours)');
+      }
+      
+      if (!timeMin || !timeMax) {
+        throw new Error('Time range (timeMin and timeMax) is required for finding available slots');
+      }
+      
+      // Normalize time range
+      const normalizedTimeRange = this.normalizeTimeRange(timeMin, timeMax);
+      
       // Get free/busy information
-      const freebusyResult = await this.getFreeBusy([calendarId], timeMin, timeMax, timeZone);
+      const freebusyResult = await this.getFreeBusy([sanitizedCalendarId], normalizedTimeRange.timeMin, normalizedTimeRange.timeMax, sanitizedTimeZone);
       
       if (!freebusyResult.success) {
         return freebusyResult;
       }
 
-      const busy = freebusyResult.freebusy.calendars[calendarId]?.busy || [];
+      const busy = freebusyResult.freebusy.calendars[sanitizedCalendarId]?.busy || [];
       
       // Calculate available slots
       const availableSlots = [];
-      const start = new Date(timeMin);
-      const end = new Date(timeMax);
-      const durationMs = duration * 60 * 1000;
+      const start = new Date(normalizedTimeRange.timeMin);
+      const end = new Date(normalizedTimeRange.timeMax);
+      const durationMs = numericDuration * 60 * 1000;
 
       let currentTime = new Date(start);
       
@@ -644,7 +737,7 @@ export class GoogleCalendarAPI {
         success: true,
         availableSlots,
         busySlots: busy,
-        message: `Found ${availableSlots.length} available slot(s) of ${duration} minutes or longer`
+        message: `Found ${availableSlots.length} available slot(s) of ${numericDuration} minutes or longer`
       };
     } catch (error) {
       console.error('Error finding available slots:', error);
@@ -741,6 +834,133 @@ export class GoogleCalendarAPI {
   }
 
   // === UTILITY METHODS ===
+
+  /**
+   * Normalizes datetime to RFC3339 format required by Google Calendar API
+   * @param {string|Date} dateTime - Input datetime in various formats
+   * @returns {string} RFC3339 formatted datetime string
+   * @throws {Error} If datetime is invalid
+   */
+  normalizeDateTime(dateTime) {
+    if (!dateTime) {
+      throw new Error('DateTime is required');
+    }
+    
+    try {
+      let date;
+      
+      // Handle string inputs
+      if (typeof dateTime === 'string') {
+        // Trim whitespace
+        dateTime = dateTime.trim();
+        
+        if (!dateTime) {
+          throw new Error('DateTime cannot be empty');
+        }
+        
+        // Handle common incomplete formats
+        // Add seconds if missing (YYYY-MM-DDTHH:MM -> YYYY-MM-DDTHH:MM:SS)
+        if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(dateTime)) {
+          dateTime += ':00';
+        }
+        
+        // Add timezone if missing (YYYY-MM-DDTHH:MM:SS -> YYYY-MM-DDTHH:MM:SS.000Z)
+        if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(dateTime)) {
+          dateTime += '.000Z';
+        }
+        
+        // Add milliseconds if missing timezone but has seconds
+        if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(dateTime)) {
+          dateTime = dateTime.replace('Z', '.000Z');
+        }
+        
+        date = new Date(dateTime);
+      } else if (dateTime instanceof Date) {
+        date = dateTime;
+      } else {
+        throw new Error('DateTime must be a string or Date object');
+      }
+      
+      // Validate the date
+      if (isNaN(date.getTime())) {
+        throw new Error('Invalid date format');
+      }
+      
+      // Return RFC3339 format
+      return date.toISOString();
+    } catch (error) {
+      throw new Error(`DateTime normalization failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Safely trims and validates string input
+   * @param {string} input - Input string
+   * @param {string} fieldName - Name of the field for error messages
+   * @param {boolean} required - Whether the field is required
+   * @returns {string} Trimmed string
+   */
+  sanitizeStringInput(input, fieldName, required = false) {
+    if (input === null || input === undefined) {
+      if (required) {
+        throw new Error(`${fieldName} is required`);
+      }
+      return '';
+    }
+    
+    if (typeof input !== 'string') {
+      if (required) {
+        throw new Error(`${fieldName} must be a string`);
+      }
+      return String(input).trim();
+    }
+    
+    const trimmed = input.trim();
+    
+    if (required && !trimmed) {
+      throw new Error(`${fieldName} cannot be empty`);
+    }
+    
+    return trimmed;
+  }
+
+  /**
+   * Validates and normalizes time range parameters
+   * @param {string} timeMin - Start time
+   * @param {string} timeMax - End time
+   * @returns {object} Normalized time range
+   */
+  normalizeTimeRange(timeMin, timeMax) {
+    let normalizedTimeMin = timeMin;
+    let normalizedTimeMax = timeMax;
+    
+    // Set defaults if not provided
+    if (!normalizedTimeMin) {
+      normalizedTimeMin = new Date().toISOString();
+    } else {
+      normalizedTimeMin = this.normalizeDateTime(normalizedTimeMin);
+    }
+    
+    if (!normalizedTimeMax) {
+      const oneWeekFromNow = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      normalizedTimeMax = oneWeekFromNow.toISOString();
+    } else {
+      normalizedTimeMax = this.normalizeDateTime(normalizedTimeMax);
+    }
+    
+    // Validate time range
+    const startDate = new Date(normalizedTimeMin);
+    const endDate = new Date(normalizedTimeMax);
+    
+    if (endDate <= startDate) {
+      throw new Error('End time must be after start time');
+    }
+    
+    return {
+      timeMin: normalizedTimeMin,
+      timeMax: normalizedTimeMax
+    };
+  }
 
   formatEventDetails(event) {
     const start = new Date(event.start?.dateTime || event.start?.date);
