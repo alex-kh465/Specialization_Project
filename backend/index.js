@@ -94,6 +94,167 @@ app.delete('/expenses/:id', authenticate, async (req, res) => {
   res.status(204).send();
 });
 
+// Get budget settings for the authenticated user
+app.get('/budget/settings', authenticate, async (req, res) => {
+  try {
+    const { data: profile, error } = await supabase
+      .from('profiles')
+      .select('monthly_budget, category_limits')
+      .eq('user_id', req.user_id)
+      .single();
+    
+    if (error) {
+      // If no profile exists, return default settings
+      return res.json({
+        monthly_budget: 5000,
+        category_limits: {
+          Food: 2000,
+          Transport: 800,
+          Books: 1000,
+          Entertainment: 800,
+          Miscellaneous: 400
+        }
+      });
+    }
+
+    res.json({
+      monthly_budget: profile.monthly_budget || 5000,
+      category_limits: profile.category_limits || {
+        Food: 2000,
+        Transport: 800,
+        Books: 1000,
+        Entertainment: 800,
+        Miscellaneous: 400
+      }
+    });
+  } catch (err) {
+    console.error('Budget settings error:', err);
+    res.status(500).json({ error: 'Failed to fetch budget settings' });
+  }
+});
+
+// Update budget settings for the authenticated user
+app.put('/budget/settings', authenticate, async (req, res) => {
+  const { monthly_budget, category_limits } = req.body;
+  
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .update({ 
+        monthly_budget: monthly_budget || 5000,
+        category_limits: category_limits || {},
+        updated_at: new Date().toISOString()
+      })
+      .eq('user_id', req.user_id)
+      .select();
+      
+    if (error) return res.status(400).json({ error: error.message });
+    res.json(data[0]);
+  } catch (err) {
+    console.error('Update budget settings error:', err);
+    res.status(500).json({ error: 'Failed to update budget settings' });
+  }
+});
+
+// Get budget analytics for the authenticated user
+app.get('/budget/analytics', authenticate, async (req, res) => {
+  try {
+    const { timeframe = '3months' } = req.query;
+    
+    // Calculate date range based on timeframe
+    const now = new Date();
+    let startDate;
+    
+    switch (timeframe) {
+      case '1month':
+        startDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        break;
+      case '3months':
+        startDate = new Date(now.getFullYear(), now.getMonth() - 3, 1);
+        break;
+      case '6months':
+        startDate = new Date(now.getFullYear(), now.getMonth() - 6, 1);
+        break;
+      case '1year':
+        startDate = new Date(now.getFullYear() - 1, now.getMonth(), 1);
+        break;
+      default:
+        startDate = new Date(now.getFullYear(), now.getMonth() - 3, 1);
+    }
+
+    // Get expenses for the period
+    const { data: expenses, error } = await supabase
+      .from('expenses')
+      .select('*')
+      .eq('user_id', req.user_id)
+      .gte('date', startDate.toISOString().split('T')[0])
+      .order('date', { ascending: false });
+
+    if (error) return res.status(400).json({ error: error.message });
+
+    // Process analytics data
+    const analytics = {
+      totalSpent: expenses.reduce((sum, exp) => sum + parseFloat(exp.amount), 0),
+      expenseCount: expenses.length,
+      averagePerDay: 0,
+      categoryBreakdown: {},
+      monthlyTrends: {},
+      dailySpending: {},
+      topExpenses: expenses.sort((a, b) => b.amount - a.amount).slice(0, 5),
+      spendingPatterns: {
+        weekdays: [0, 0, 0, 0, 0, 0, 0], // Sunday to Saturday
+        monthlyAverage: 0
+      }
+    };
+
+    // Calculate category breakdown
+    expenses.forEach(expense => {
+      const category = expense.category;
+      if (!analytics.categoryBreakdown[category]) {
+        analytics.categoryBreakdown[category] = { total: 0, count: 0 };
+      }
+      analytics.categoryBreakdown[category].total += parseFloat(expense.amount);
+      analytics.categoryBreakdown[category].count += 1;
+    });
+
+    // Calculate monthly trends
+    expenses.forEach(expense => {
+      const monthYear = new Date(expense.date).toISOString().slice(0, 7); // YYYY-MM
+      if (!analytics.monthlyTrends[monthYear]) {
+        analytics.monthlyTrends[monthYear] = 0;
+      }
+      analytics.monthlyTrends[monthYear] += parseFloat(expense.amount);
+    });
+
+    // Calculate daily spending
+    expenses.forEach(expense => {
+      const date = expense.date;
+      if (!analytics.dailySpending[date]) {
+        analytics.dailySpending[date] = 0;
+      }
+      analytics.dailySpending[date] += parseFloat(expense.amount);
+    });
+
+    // Calculate spending patterns
+    expenses.forEach(expense => {
+      const dayOfWeek = new Date(expense.date).getDay();
+      analytics.spendingPatterns.weekdays[dayOfWeek] += parseFloat(expense.amount);
+    });
+
+    // Calculate averages
+    const daysDiff = Math.ceil((now - startDate) / (1000 * 60 * 60 * 24));
+    analytics.averagePerDay = analytics.totalSpent / daysDiff;
+    
+    const monthsInPeriod = Object.keys(analytics.monthlyTrends).length || 1;
+    analytics.spendingPatterns.monthlyAverage = analytics.totalSpent / monthsInPeriod;
+
+    res.json(analytics);
+  } catch (err) {
+    console.error('Budget analytics error:', err);
+    res.status(500).json({ error: 'Failed to fetch budget analytics' });
+  }
+});
+
 // Get the authenticated user's profile
 app.get('/profile', authenticate, async (req, res) => {
   const { data, error } = await supabase
@@ -987,32 +1148,447 @@ For non-calendar requests, respond normally as an academic assistant.`
   }
 });
 
+// IP Geolocation endpoint
+app.get('/location/detect', authenticate, async (req, res) => {
+  try {
+    // Get client IP address
+    const clientIP = req.headers['x-forwarded-for'] || 
+                    req.headers['x-real-ip'] || 
+                    req.connection.remoteAddress || 
+                    req.socket.remoteAddress ||
+                    (req.connection.socket ? req.connection.socket.remoteAddress : null);
+    
+    // For development/localhost, use a fallback IP
+    const ipToUse = (clientIP === '::1' || clientIP === '127.0.0.1' || !clientIP) 
+      ? '8.8.8.8' // Google's public DNS as fallback
+      : clientIP.split(',')[0].trim(); // Handle comma-separated IPs
+    
+    // Use ipapi.co for IP geolocation (free tier)
+    const locationResponse = await fetch(`http://ipapi.co/${ipToUse}/json/`);
+    const locationData = await locationResponse.json();
+    
+    if (locationData.error) {
+      throw new Error(locationData.reason || 'Geolocation service error');
+    }
+    
+    res.json({
+      ip: ipToUse,
+      city: locationData.city,
+      region: locationData.region,
+      country: locationData.country_name,
+      latitude: locationData.latitude,
+      longitude: locationData.longitude,
+      timezone: locationData.timezone
+    });
+  } catch (err) {
+    console.error('IP Geolocation error:', err);
+    res.status(500).json({ error: 'Failed to detect location' });
+  }
+});
+
+// Test endpoint (no auth required)
+app.get('/test', (req, res) => {
+  res.json({ message: 'Server is working!', timestamp: new Date().toISOString() });
+});
+
 // Weather endpoint - using OpenWeatherMap API
 app.get('/weather', authenticate, async (req, res) => {
-  const { city = 'Delhi' } = req.query;
+  const { city, lat, lon, auto } = req.query;
+  
   try {
-    // For demo purposes, return mock data. Replace with actual API call
-    const mockWeatherData = {
-      location: `${city}, India`,
-      temperature: Math.floor(Math.random() * 15) + 20, // 20-35°C
-      condition: ['Sunny', 'Cloudy', 'Partly Cloudy', 'Rainy'][Math.floor(Math.random() * 4)],
-      humidity: Math.floor(Math.random() * 40) + 40, // 40-80%
-      windSpeed: Math.floor(Math.random() * 15) + 5, // 5-20 km/h
-      visibility: Math.floor(Math.random() * 5) + 8, // 8-12 km
-      feelsLike: Math.floor(Math.random() * 15) + 22, // 22-37°C
-      forecast: Array.from({ length: 5 }, (_, i) => ({
-        day: ['Today', 'Tomorrow', 'Wednesday', 'Thursday', 'Friday'][i],
-        high: Math.floor(Math.random() * 10) + 25,
-        low: Math.floor(Math.random() * 8) + 18,
-        condition: ['Sunny', 'Cloudy', 'Partly Cloudy'][Math.floor(Math.random() * 3)]
-      }))
-    };
-    res.json(mockWeatherData);
+    let weatherData;
+    
+    if (lat && lon) {
+      // Use coordinates for weather data
+      weatherData = await getWeatherByCoordinates(parseFloat(lat), parseFloat(lon));
+    } else if (city) {
+      // Use city name for weather data
+      weatherData = await getWeatherByCity(city);
+    } else if (auto === 'true' || auto === '1') {
+      // Auto-detect location based on IP address
+      try {
+        const locationData = await getLocationFromIP(req);
+        if (locationData && locationData.latitude && locationData.longitude) {
+          console.log(`Auto-detected location: ${locationData.city}, ${locationData.country} (${locationData.latitude}, ${locationData.longitude})`);
+          weatherData = await getWeatherByCoordinates(locationData.latitude, locationData.longitude);
+        } else {
+          // Fallback to Bangalore if auto-detection fails
+          console.log('Auto-detection failed, falling back to Bangalore');
+          weatherData = await getWeatherByCity('Bangalore');
+        }
+      } catch (ipError) {
+        console.log('IP-based location detection failed:', ipError.message);
+        weatherData = await getWeatherByCity('Bangalore');
+      }
+    } else {
+      // Default to Bangalore
+      weatherData = await getWeatherByCity('Bangalore');
+    }
+    
+    res.json(weatherData);
   } catch (err) {
     console.error('Weather API error:', err);
     res.status(500).json({ error: 'Failed to fetch weather data' });
   }
 });
+
+// Weather by IP endpoint - automatically detects location and fetches weather
+app.get('/weather/auto', authenticate, async (req, res) => {
+  try {
+    console.log('Auto-detecting weather based on IP address...');
+    
+    // Get location from IP
+    const locationData = await getLocationFromIP(req);
+    
+    if (!locationData) {
+      return res.status(500).json({ error: 'Failed to detect location from IP address' });
+    }
+    
+    console.log(`Detected location: ${locationData.city}, ${locationData.country}`);
+    
+    // Get weather for detected location
+    const weatherData = await getWeatherByCoordinates(locationData.latitude, locationData.longitude);
+    
+    // Include location info in the response
+    const response = {
+      ...weatherData,
+      detectedLocation: {
+        ip: locationData.ip,
+        city: locationData.city,
+        region: locationData.region,
+        country: locationData.country,
+        timezone: locationData.timezone
+      }
+    };
+    
+    res.json(response);
+  } catch (err) {
+    console.error('Auto weather detection error:', err);
+    res.status(500).json({ error: 'Failed to auto-detect weather based on location' });
+  }
+});
+
+// Helper function to get location from IP address with multiple fallback services
+async function getLocationFromIP(req) {
+  try {
+    // Get client IP address
+    const clientIP = req.headers['x-forwarded-for'] || 
+                    req.headers['x-real-ip'] || 
+                    req.connection.remoteAddress || 
+                    req.socket.remoteAddress ||
+                    (req.connection.socket ? req.connection.socket.remoteAddress : null);
+    
+    // For development/localhost, use a fallback IP
+    const ipToUse = (clientIP === '::1' || clientIP === '127.0.0.1' || !clientIP) 
+      ? '8.8.8.8' // Google's public DNS as fallback
+      : clientIP.split(',')[0].trim(); // Handle comma-separated IPs
+    
+    console.log(`Detecting location for IP: ${ipToUse}`);
+    
+    // Try multiple IP geolocation services with fallbacks
+    const services = [
+      {
+        name: 'ipapi.co',
+        url: `http://ipapi.co/${ipToUse}/json/`,
+        parseResponse: (data) => ({
+          ip: ipToUse,
+          city: data.city,
+          region: data.region,
+          country: data.country_name,
+          latitude: data.latitude,
+          longitude: data.longitude,
+          timezone: data.timezone
+        }),
+        isError: (data) => !!data.error
+      },
+      {
+        name: 'ip-api.com',
+        url: `http://ip-api.com/json/${ipToUse}`,
+        parseResponse: (data) => ({
+          ip: ipToUse,
+          city: data.city,
+          region: data.regionName,
+          country: data.country,
+          latitude: data.lat,
+          longitude: data.lon,
+          timezone: data.timezone
+        }),
+        isError: (data) => data.status === 'fail'
+      },
+      {
+        name: 'ipinfo.io',
+        url: `https://ipinfo.io/${ipToUse}/json`,
+        parseResponse: (data) => {
+          const [lat, lon] = (data.loc || '0,0').split(',');
+          return {
+            ip: ipToUse,
+            city: data.city,
+            region: data.region,
+            country: data.country,
+            latitude: parseFloat(lat),
+            longitude: parseFloat(lon),
+            timezone: data.timezone
+          };
+        },
+        isError: (data) => !!data.error
+      }
+    ];
+    
+    for (const service of services) {
+      try {
+        console.log(`Trying ${service.name}...`);
+        const locationResponse = await fetch(service.url);
+        
+        if (!locationResponse.ok) {
+          console.log(`${service.name} returned ${locationResponse.status}`);
+          continue;
+        }
+        
+        const locationData = await locationResponse.json();
+        
+        if (service.isError(locationData)) {
+          console.log(`${service.name} returned error:`, locationData);
+          continue;
+        }
+        
+        const parsedData = service.parseResponse(locationData);
+        
+        // Validate required fields
+        if (!parsedData.latitude || !parsedData.longitude) {
+          console.log(`${service.name} missing coordinates`);
+          continue;
+        }
+        
+        console.log(`✅ Successfully got location from ${service.name}:`, 
+                   `${parsedData.city}, ${parsedData.country} (${parsedData.latitude}, ${parsedData.longitude})`);
+        return parsedData;
+        
+      } catch (serviceError) {
+        console.log(`${service.name} failed:`, serviceError.message);
+        continue;
+      }
+    }
+    
+    // If all services fail, return a default location (Bangalore, India)
+    console.log('All IP geolocation services failed, using default location (Bangalore, India)');
+    return {
+      ip: ipToUse,
+      city: 'Bangalore',
+      region: 'Karnataka',
+      country: 'India',
+      latitude: 12.9716,
+      longitude: 77.5946,
+      timezone: 'Asia/Kolkata'
+    };
+    
+  } catch (error) {
+    console.error('IP geolocation error:', error);
+    // Return default location on error
+    return {
+      ip: '8.8.8.8',
+      city: 'Bangalore',
+      region: 'Karnataka',
+      country: 'India',
+      latitude: 12.9716,
+      longitude: 77.5946,
+      timezone: 'Asia/Kolkata'
+    };
+  }
+}
+
+// Helper function to get weather by coordinates
+async function getWeatherByCoordinates(lat, lon) {
+  const API_KEY = process.env.OPENWEATHER_API_KEY;
+  
+  if (!API_KEY) {
+    console.warn('OpenWeatherMap API key not configured, using mock data');
+    return getMockWeatherData(`Location at ${lat.toFixed(2)}, ${lon.toFixed(2)}`, lat, lon);
+  }
+  
+  try {
+    // Get current weather by coordinates
+    const currentWeatherUrl = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${API_KEY}&units=metric`;
+    const currentResponse = await fetch(currentWeatherUrl);
+    
+    if (!currentResponse.ok) {
+      throw new Error(`Weather API error: ${currentResponse.status}`);
+    }
+    
+    const currentData = await currentResponse.json();
+    
+    // Get 5-day forecast
+    const forecastUrl = `https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lon}&appid=${API_KEY}&units=metric`;
+    const forecastResponse = await fetch(forecastUrl);
+    let forecastData = null;
+    
+    if (forecastResponse.ok) {
+      forecastData = await forecastResponse.json();
+    }
+    
+    return formatWeatherData(currentData, forecastData, lat, lon);
+  } catch (error) {
+    console.error('Error fetching weather by coordinates:', error);
+    return getMockWeatherData(`Location at ${lat.toFixed(2)}, ${lon.toFixed(2)}`, lat, lon);
+  }
+}
+
+// Helper function to get weather by city
+async function getWeatherByCity(city) {
+  const API_KEY = process.env.OPENWEATHER_API_KEY;
+  
+  if (!API_KEY) {
+    console.warn('OpenWeatherMap API key not configured, using mock data');
+    return getMockWeatherData(`${city}, India`);
+  }
+  
+  try {
+    // Get current weather by city name
+    const currentWeatherUrl = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(city)}&appid=${API_KEY}&units=metric`;
+    const currentResponse = await fetch(currentWeatherUrl);
+    
+    if (!currentResponse.ok) {
+      throw new Error(`Weather API error: ${currentResponse.status}`);
+    }
+    
+    const currentData = await currentResponse.json();
+    
+    // Get 5-day forecast
+    const forecastUrl = `https://api.openweathermap.org/data/2.5/forecast?q=${encodeURIComponent(city)}&appid=${API_KEY}&units=metric`;
+    const forecastResponse = await fetch(forecastUrl);
+    let forecastData = null;
+    
+    if (forecastResponse.ok) {
+      forecastData = await forecastResponse.json();
+    }
+    
+    return formatWeatherData(currentData, forecastData);
+  } catch (error) {
+    console.error('Error fetching weather by city:', error);
+    return getMockWeatherData(`${city}, India`);
+  }
+}
+
+// Helper function to format OpenWeatherMap data
+function formatWeatherData(currentData, forecastData, lat = null, lon = null) {
+  const formatCondition = (weatherMain) => {
+    switch (weatherMain.toLowerCase()) {
+      case 'clear':
+        return 'Sunny';
+      case 'clouds':
+        return 'Cloudy';
+      case 'rain':
+      case 'drizzle':
+        return 'Rainy';
+      case 'thunderstorm':
+        return 'Stormy';
+      case 'snow':
+        return 'Snowy';
+      case 'mist':
+      case 'fog':
+        return 'Foggy';
+      default:
+        return 'Partly Cloudy';
+    }
+  };
+  
+  // Process forecast data
+  let forecast = [];
+  if (forecastData && forecastData.list) {
+    const dailyForecasts = {};
+    const days = ['Today', 'Tomorrow', 'Wednesday', 'Thursday', 'Friday'];
+    
+    forecastData.list.forEach(item => {
+      const date = new Date(item.dt * 1000).toDateString();
+      if (!dailyForecasts[date]) {
+        dailyForecasts[date] = {
+          temps: [item.main.temp],
+          conditions: [item.weather[0].main]
+        };
+      } else {
+        dailyForecasts[date].temps.push(item.main.temp);
+        dailyForecasts[date].conditions.push(item.weather[0].main);
+      }
+    });
+    
+    let dayIndex = 0;
+    for (const [date, data] of Object.entries(dailyForecasts)) {
+      if (dayIndex >= 5) break;
+      
+      const temps = data.temps;
+      const conditions = data.conditions;
+      
+      forecast.push({
+        day: days[dayIndex] || new Date(date).toLocaleDateString('en-US', { weekday: 'long' }),
+        high: Math.round(Math.max(...temps)),
+        low: Math.round(Math.min(...temps)),
+        condition: formatCondition(conditions[0]) // Use first condition of the day
+      });
+      
+      dayIndex++;
+    }
+  }
+  
+  // Fill remaining days with mock data if needed
+  while (forecast.length < 5) {
+    const dayNames = ['Today', 'Tomorrow', 'Wednesday', 'Thursday', 'Friday'];
+    forecast.push({
+      day: dayNames[forecast.length],
+      high: Math.round(currentData.main.temp + Math.random() * 6 - 3),
+      low: Math.round(currentData.main.temp - 5),
+      condition: formatCondition(currentData.weather[0].main)
+    });
+  }
+  
+  return {
+    location: `${currentData.name}, ${currentData.sys.country}`,
+    latitude: lat || currentData.coord.lat,
+    longitude: lon || currentData.coord.lon,
+    temperature: Math.round(currentData.main.temp),
+    condition: formatCondition(currentData.weather[0].main),
+    description: currentData.weather[0].description,
+    humidity: currentData.main.humidity,
+    windSpeed: Math.round(currentData.wind.speed * 3.6), // Convert m/s to km/h
+    visibility: currentData.visibility ? Math.round(currentData.visibility / 1000) : 10, // Convert m to km
+    feelsLike: Math.round(currentData.main.feels_like),
+    pressure: currentData.main.pressure,
+    sunrise: new Date(currentData.sys.sunrise * 1000).toLocaleTimeString('en-IN', { 
+      timeZone: 'Asia/Kolkata',
+      hour: '2-digit',
+      minute: '2-digit'
+    }),
+    sunset: new Date(currentData.sys.sunset * 1000).toLocaleTimeString('en-IN', { 
+      timeZone: 'Asia/Kolkata',
+      hour: '2-digit',
+      minute: '2-digit'
+    }),
+    forecast
+  };
+}
+
+// Helper function to generate mock weather data when API is unavailable
+function getMockWeatherData(location, lat = null, lon = null) {
+  return {
+    location,
+    latitude: lat,
+    longitude: lon,
+    temperature: Math.floor(Math.random() * 15) + 20, // 20-35°C
+    condition: ['Sunny', 'Cloudy', 'Partly Cloudy', 'Rainy'][Math.floor(Math.random() * 4)],
+    description: 'Mock weather data - configure OPENWEATHER_API_KEY for real data',
+    humidity: Math.floor(Math.random() * 40) + 40, // 40-80%
+    windSpeed: Math.floor(Math.random() * 15) + 5, // 5-20 km/h
+    visibility: Math.floor(Math.random() * 5) + 8, // 8-12 km
+    feelsLike: Math.floor(Math.random() * 15) + 22, // 22-37°C
+    pressure: Math.floor(Math.random() * 50) + 1000,
+    sunrise: '06:30',
+    sunset: '18:45',
+    forecast: Array.from({ length: 5 }, (_, i) => ({
+      day: ['Today', 'Tomorrow', 'Wednesday', 'Thursday', 'Friday'][i],
+      high: Math.floor(Math.random() * 10) + 25,
+      low: Math.floor(Math.random() * 8) + 18,
+      condition: ['Sunny', 'Cloudy', 'Partly Cloudy'][Math.floor(Math.random() * 3)]
+    }))
+  };
+}
 
 // Daily digest endpoint
 app.post('/digest/generate', authenticate, async (req, res) => {
