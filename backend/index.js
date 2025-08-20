@@ -93,6 +93,167 @@ app.delete('/expenses/:id', authenticate, async (req, res) => {
   res.status(204).send();
 });
 
+// Get budget settings for the authenticated user
+app.get('/budget/settings', authenticate, async (req, res) => {
+  try {
+    const { data: profile, error } = await supabase
+      .from('profiles')
+      .select('monthly_budget, category_limits')
+      .eq('user_id', req.user_id)
+      .single();
+    
+    if (error) {
+      // If no profile exists, return default settings
+      return res.json({
+        monthly_budget: 5000,
+        category_limits: {
+          Food: 2000,
+          Transport: 800,
+          Books: 1000,
+          Entertainment: 800,
+          Miscellaneous: 400
+        }
+      });
+    }
+
+    res.json({
+      monthly_budget: profile.monthly_budget || 5000,
+      category_limits: profile.category_limits || {
+        Food: 2000,
+        Transport: 800,
+        Books: 1000,
+        Entertainment: 800,
+        Miscellaneous: 400
+      }
+    });
+  } catch (err) {
+    console.error('Budget settings error:', err);
+    res.status(500).json({ error: 'Failed to fetch budget settings' });
+  }
+});
+
+// Update budget settings for the authenticated user
+app.put('/budget/settings', authenticate, async (req, res) => {
+  const { monthly_budget, category_limits } = req.body;
+  
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .update({ 
+        monthly_budget: monthly_budget || 5000,
+        category_limits: category_limits || {},
+        updated_at: new Date().toISOString()
+      })
+      .eq('user_id', req.user_id)
+      .select();
+      
+    if (error) return res.status(400).json({ error: error.message });
+    res.json(data[0]);
+  } catch (err) {
+    console.error('Update budget settings error:', err);
+    res.status(500).json({ error: 'Failed to update budget settings' });
+  }
+});
+
+// Get budget analytics for the authenticated user
+app.get('/budget/analytics', authenticate, async (req, res) => {
+  try {
+    const { timeframe = '3months' } = req.query;
+    
+    // Calculate date range based on timeframe
+    const now = new Date();
+    let startDate;
+    
+    switch (timeframe) {
+      case '1month':
+        startDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        break;
+      case '3months':
+        startDate = new Date(now.getFullYear(), now.getMonth() - 3, 1);
+        break;
+      case '6months':
+        startDate = new Date(now.getFullYear(), now.getMonth() - 6, 1);
+        break;
+      case '1year':
+        startDate = new Date(now.getFullYear() - 1, now.getMonth(), 1);
+        break;
+      default:
+        startDate = new Date(now.getFullYear(), now.getMonth() - 3, 1);
+    }
+
+    // Get expenses for the period
+    const { data: expenses, error } = await supabase
+      .from('expenses')
+      .select('*')
+      .eq('user_id', req.user_id)
+      .gte('date', startDate.toISOString().split('T')[0])
+      .order('date', { ascending: false });
+
+    if (error) return res.status(400).json({ error: error.message });
+
+    // Process analytics data
+    const analytics = {
+      totalSpent: expenses.reduce((sum, exp) => sum + parseFloat(exp.amount), 0),
+      expenseCount: expenses.length,
+      averagePerDay: 0,
+      categoryBreakdown: {},
+      monthlyTrends: {},
+      dailySpending: {},
+      topExpenses: expenses.sort((a, b) => b.amount - a.amount).slice(0, 5),
+      spendingPatterns: {
+        weekdays: [0, 0, 0, 0, 0, 0, 0], // Sunday to Saturday
+        monthlyAverage: 0
+      }
+    };
+
+    // Calculate category breakdown
+    expenses.forEach(expense => {
+      const category = expense.category;
+      if (!analytics.categoryBreakdown[category]) {
+        analytics.categoryBreakdown[category] = { total: 0, count: 0 };
+      }
+      analytics.categoryBreakdown[category].total += parseFloat(expense.amount);
+      analytics.categoryBreakdown[category].count += 1;
+    });
+
+    // Calculate monthly trends
+    expenses.forEach(expense => {
+      const monthYear = new Date(expense.date).toISOString().slice(0, 7); // YYYY-MM
+      if (!analytics.monthlyTrends[monthYear]) {
+        analytics.monthlyTrends[monthYear] = 0;
+      }
+      analytics.monthlyTrends[monthYear] += parseFloat(expense.amount);
+    });
+
+    // Calculate daily spending
+    expenses.forEach(expense => {
+      const date = expense.date;
+      if (!analytics.dailySpending[date]) {
+        analytics.dailySpending[date] = 0;
+      }
+      analytics.dailySpending[date] += parseFloat(expense.amount);
+    });
+
+    // Calculate spending patterns
+    expenses.forEach(expense => {
+      const dayOfWeek = new Date(expense.date).getDay();
+      analytics.spendingPatterns.weekdays[dayOfWeek] += parseFloat(expense.amount);
+    });
+
+    // Calculate averages
+    const daysDiff = Math.ceil((now - startDate) / (1000 * 60 * 60 * 24));
+    analytics.averagePerDay = analytics.totalSpent / daysDiff;
+    
+    const monthsInPeriod = Object.keys(analytics.monthlyTrends).length || 1;
+    analytics.spendingPatterns.monthlyAverage = analytics.totalSpent / monthsInPeriod;
+
+    res.json(analytics);
+  } catch (err) {
+    console.error('Budget analytics error:', err);
+    res.status(500).json({ error: 'Failed to fetch budget analytics' });
+  }
+});
+
 // Get the authenticated user's profile
 app.get('/profile', authenticate, async (req, res) => {
   const { data, error } = await supabase
