@@ -210,36 +210,89 @@ const MCPCalendar: React.FC = () => {
   
   const { toast } = useToast();
 
+  // Helper function to normalize event data to ensure consistent format
+  const normalizeEventData = (event: any): GoogleCalendarEvent => {
+    if (!event) return null;
+    
+    const normalized: GoogleCalendarEvent = {
+      id: event.id || event.eventId || '',
+      summary: event.summary || event.title || 'Untitled Event',
+      description: event.description || '',
+      start: {
+        dateTime: '',
+        timeZone: 'Asia/Kolkata'
+      },
+      end: {
+        dateTime: '',
+        timeZone: 'Asia/Kolkata'
+      },
+      location: event.location || '',
+      attendees: event.attendees || [],
+      colorId: event.colorId,
+      status: event.status,
+      htmlLink: event.htmlLink
+    };
+    
+    // Normalize start time
+    if (event.start) {
+      if (typeof event.start === 'string') {
+        normalized.start.dateTime = event.start;
+      } else if (event.start.dateTime) {
+        normalized.start.dateTime = event.start.dateTime;
+        normalized.start.timeZone = event.start.timeZone || 'Asia/Kolkata';
+      } else if (event.start.date) {
+        normalized.start.dateTime = new Date(event.start.date + 'T00:00:00').toISOString();
+      }
+    }
+    
+    // Normalize end time
+    if (event.end) {
+      if (typeof event.end === 'string') {
+        normalized.end.dateTime = event.end;
+      } else if (event.end.dateTime) {
+        normalized.end.dateTime = event.end.dateTime;
+        normalized.end.timeZone = event.end.timeZone || 'Asia/Kolkata';
+      } else if (event.end.date) {
+        normalized.end.dateTime = new Date(event.end.date + 'T23:59:59').toISOString();
+      }
+    }
+    
+    // Ensure valid dates
+    if (!normalized.start.dateTime || isNaN(new Date(normalized.start.dateTime).getTime())) {
+      normalized.start.dateTime = new Date().toISOString();
+    }
+    if (!normalized.end.dateTime || isNaN(new Date(normalized.end.dateTime).getTime())) {
+      normalized.end.dateTime = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    }
+    
+    return normalized;
+  };
+
   // Calendar API Functions using new endpoints
   const fetchMCPCalendars = async () => {
     try {
       const token = getToken();
-      const response = await fetch(`${API_URL}/calendar/mcp/calendars`, {
+      const response = await fetch(`${API_URL}/calendar/calendars`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (response.ok) {
         const data = await response.json();
         console.log('Calendars response:', data);
-        // Handle multiple MCP response formats
-        let calendarsArray = [];
-        if (data.calendars && Array.isArray(data.calendars)) {
-          // Direct structured response from MCP
-          calendarsArray = data.calendars;
-        } else if (data.data && Array.isArray(data.data)) {
-          // Backend wrapped response
-          calendarsArray = data.data;
-        } else if (data.items && Array.isArray(data.items)) {
-          // Google Calendar API format
-          calendarsArray = data.items;
-        } else if (data.message && typeof data.message === 'string') {
-          // Parse text-based calendar list from MCP
-          calendarsArray = parseCalendarsFromMessage(data.message);
-        } else {
-          console.log('Unexpected calendar response format:', data);
-          console.log('Available keys:', Object.keys(data));
+        // Handle the structured response from endpoints-minimal.js
+        let calendarList = [];
+        if (data.success && data.data && data.data.calendars) {
+          calendarList = data.data.calendars;
+        } else if (data.success && data.data && typeof data.data.message === 'string') {
+          // Parse from MCP message format
+          calendarList = parseCalendarsFromMessage(data.data.message);
+        } else if (data.calendars) {
+          calendarList = data.calendars;
+        } else if (data.message) {
+          calendarList = parseCalendarsFromMessage(data.message);
         }
-        console.log('Parsed calendars:', calendarsArray.length);
-        setCalendars(calendarsArray);
+        
+        console.log('Parsed calendars:', calendarList);
+        setCalendars(calendarList);
       } else {
         console.error('Failed to fetch calendars:', response.statusText);
       }
@@ -257,41 +310,39 @@ const MCPCalendar: React.FC = () => {
       const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, now.getDate());
       
       const params = new URLSearchParams({
-        calendarId: selectedCalendars.length > 1 ? JSON.stringify(selectedCalendars) : selectedCalendars[0],
-        timeMin: now.toISOString().slice(0, 19),
-        timeMax: nextMonth.toISOString().slice(0, 19),
+        calendarId: selectedCalendars[0] || 'primary',
+        timeMin: now.toISOString(),
+        timeMax: nextMonth.toISOString(),
         timeZone: 'Asia/Kolkata'
       });
       
-      const response = await fetch(`${API_URL}/calendar/mcp/events?${params}`, {
+      const response = await fetch(`${API_URL}/calendar/events?${params}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       
       if (response.ok) {
         const data = await response.json();
         console.log('Events response:', data);
-        // Handle multiple MCP response formats
-        let eventsArray = [];
-        if (data.events && Array.isArray(data.events)) {
-          // Direct structured response from MCP
-          eventsArray = data.events;
-        } else if (data.data && Array.isArray(data.data)) {
-          // Backend wrapped response
-          eventsArray = data.data;
-        } else if (data.items && Array.isArray(data.items)) {
-          // Google Calendar API format
-          eventsArray = data.items;
-        } else if (data.message && typeof data.message === 'string') {
-          // Parse text-based events list from MCP
-          eventsArray = parseEventsFromMessage(data.message);
-        } else {
-          console.log('Unexpected events response format:', data);
-          console.log('Available keys:', Object.keys(data));
+        // Handle the structured response from endpoints-minimal.js
+        let eventList = [];
+        if (data.success && data.data && data.data.events) {
+          eventList = data.data.events;
+        } else if (data.success && data.data && typeof data.data.message === 'string') {
+          // Parse from MCP message format
+          eventList = parseEventsFromMessage(data.data.message);
+        } else if (data.events) {
+          eventList = data.events;
+        } else if (data.message) {
+          eventList = parseEventsFromMessage(data.message);
         }
-        console.log('Parsed events:', eventsArray.length);
-        setGoogleEvents(eventsArray);
+        
+        // Normalize all events to ensure consistent format
+        const normalizedEvents = eventList.map(event => normalizeEventData(event)).filter(event => event !== null);
+        console.log('Normalized events:', normalizedEvents);
+        setGoogleEvents(normalizedEvents);
       } else {
-        throw new Error('Failed to fetch Google Calendar events');
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'Failed to fetch Google Calendar events');
       }
     } catch (err: any) {
       setError(err.message || 'Failed to load events');
@@ -308,12 +359,16 @@ const MCPCalendar: React.FC = () => {
   const fetchColors = async () => {
     try {
       const token = getToken();
-      const response = await fetch(`${API_URL}/calendar/mcp/colors`, {
+      const response = await fetch(`${API_URL}/calendar/colors`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (response.ok) {
         const data = await response.json();
-        setColors(data.event || data.data?.event || {});
+        if (data.success && data.data) {
+          setColors(data.data.event || data.data || {});
+        } else {
+          setColors(data.event || data || {});
+        }
       }
     } catch (error) {
       console.error('Failed to fetch colors:', error);
@@ -330,48 +385,49 @@ const MCPCalendar: React.FC = () => {
       const nextMonth = new Date(now.getFullYear(), now.getMonth() + 3, now.getDate());
       
       const params = new URLSearchParams({
+        q: searchQuery,
         calendarId: 'primary',
-        query: searchQuery,
-        timeMin: dateRange.start || now.toISOString().slice(0, 19),
-        timeMax: dateRange.end || nextMonth.toISOString().slice(0, 19),
+        timeMin: dateRange.start || now.toISOString(),
+        timeMax: dateRange.end || nextMonth.toISOString(),
         timeZone: 'Asia/Kolkata'
       });
       
-      const response = await fetch(`${API_URL}/calendar/mcp/search?query=${encodeURIComponent(searchQuery)}&${params}`, {
+      const response = await fetch(`${API_URL}/calendar/events/search?${params}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       
       if (response.ok) {
         const data = await response.json();
         console.log('Search response:', data);
-        // Handle multiple MCP response formats for search
-        let eventsArray = [];
-        if (data.events && Array.isArray(data.events)) {
-          // Direct structured response from MCP
-          eventsArray = data.events;
-        } else if (data.data && Array.isArray(data.data)) {
-          // Backend wrapped response
-          eventsArray = data.data;
-        } else if (data.items && Array.isArray(data.items)) {
-          // Google Calendar API format
-          eventsArray = data.items;
-        } else if (data.message && typeof data.message === 'string') {
-          eventsArray = parseEventsFromMessage(data.message);
-        } else {
-          console.log('Unexpected search response format:', data);
-          console.log('Available keys:', Object.keys(data));
+        // Handle the structured response from endpoints-minimal.js
+        let eventList = [];
+        if (data.success && data.data && data.data.events) {
+          eventList = data.data.events;
+        } else if (data.success && data.data && typeof data.data.message === 'string') {
+          // Parse from MCP message format
+          eventList = parseEventsFromMessage(data.data.message);
+        } else if (data.events) {
+          eventList = data.events;
+        } else if (data.message) {
+          eventList = parseEventsFromMessage(data.message);
         }
-        console.log('Search results:', eventsArray.length);
-        setGoogleEvents(eventsArray);
+        
+        // Normalize all events to ensure consistent format
+        const normalizedEvents = eventList.map(event => normalizeEventData(event)).filter(event => event !== null);
+        setGoogleEvents(normalizedEvents);
+        
         toast({
           title: "Search Complete",
-          description: `Found ${eventsArray.length} events`
+          description: `Found ${normalizedEvents.length} events matching "${searchQuery}"`
         });
+      } else {
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'Search failed');
       }
-    } catch (error) {
+    } catch (error: any) {
       toast({
         title: "Search Failed",
-        description: "Failed to search events",
+        description: error.message || "Failed to search events",
         variant: "destructive"
       });
     } finally {
@@ -385,7 +441,7 @@ const MCPCalendar: React.FC = () => {
       const now = new Date();
       const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
       
-      const response = await fetch(`${API_URL}/calendar/mcp/availability`, {
+      const response = await fetch(`${API_URL}/calendar/freebusy`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -401,7 +457,7 @@ const MCPCalendar: React.FC = () => {
       
       if (response.ok) {
         const data = await response.json();
-        const slots = data.availableSlots || data.data?.availableSlots || [];
+        const slots = data.data?.availableSlots || data.availableSlots || [];
         setAvailableSlots(slots);
         toast({
           title: "Availability Found",
@@ -423,13 +479,21 @@ const MCPCalendar: React.FC = () => {
     setAddingEvent(true);
     try {
       const token = getToken();
-      const response = await fetch(`${API_URL}/calendar/mcp/events`, {
+      
+      // Ensure datetime format includes seconds
+      const eventData = {
+        ...newEvent,
+        start: newEvent.start.includes(':') && newEvent.start.split(':').length === 2 ? newEvent.start + ':00' : newEvent.start,
+        end: newEvent.end.includes(':') && newEvent.end.split(':').length === 2 ? newEvent.end + ':00' : newEvent.end
+      };
+      
+      const response = await fetch(`${API_URL}/calendar/events`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify(newEvent)
+        body: JSON.stringify(eventData)
       });
       
       if (response.ok) {
@@ -468,7 +532,7 @@ const MCPCalendar: React.FC = () => {
   const deleteEvent = async (eventId: string) => {
     try {
       const token = getToken();
-      const response = await fetch(`${API_URL}/calendar/mcp/events/${eventId}?calendarId=primary`, {
+      const response = await fetch(`${API_URL}/calendar/events/${eventId}?calendarId=primary`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` }
       });
@@ -499,23 +563,27 @@ const MCPCalendar: React.FC = () => {
     setAddingEvent(true);
     try {
       const token = getToken();
-      const response = await fetch(`${API_URL}/calendar/mcp/events/${editingEvent.id}`, {
+      
+      // Ensure datetime format includes seconds
+      const eventData = {
+        calendarId: 'primary',
+        summary: newEvent.summary,
+        description: newEvent.description,
+        start: newEvent.start.includes(':') && newEvent.start.split(':').length === 2 ? newEvent.start + ':00' : newEvent.start,
+        end: newEvent.end.includes(':') && newEvent.end.split(':').length === 2 ? newEvent.end + ':00' : newEvent.end,
+        location: newEvent.location,
+        attendees: newEvent.attendees,
+        colorId: newEvent.colorId,
+        reminders: newEvent.reminders
+      };
+      
+      const response = await fetch(`${API_URL}/calendar/events/${editingEvent.id}`, {
         method: 'PUT',
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({
-          calendarId: 'primary',
-          summary: newEvent.summary,
-          description: newEvent.description,
-          start: newEvent.start,
-          end: newEvent.end,
-          location: newEvent.location,
-          attendees: newEvent.attendees,
-          colorId: newEvent.colorId,
-          reminders: newEvent.reminders
-        })
+        body: JSON.stringify(eventData)
       });
       
       if (response.ok) {
@@ -574,12 +642,29 @@ const MCPCalendar: React.FC = () => {
   }, []);
 
   const formatEventTime = (event: GoogleCalendarEvent) => {
-    const start = new Date(event.start.dateTime);
-    const end = new Date(event.end.dateTime);
-    return {
-      date: start.toLocaleDateString('en-IN'),
-      time: `${start.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })} - ${end.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`
-    };
+    try {
+      const start = new Date(event.start.dateTime);
+      const end = new Date(event.end.dateTime);
+      
+      // Check if dates are valid
+      if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+        return {
+          date: 'Invalid Date',
+          time: 'Invalid Time'
+        };
+      }
+      
+      return {
+        date: start.toLocaleDateString('en-IN'),
+        time: `${start.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })} - ${end.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`
+      };
+    } catch (error) {
+      console.error('Error formatting event time:', error, event);
+      return {
+        date: 'Invalid Date',
+        time: 'Invalid Time'
+      };
+    }
   };
 
   return (

@@ -603,7 +603,7 @@ For non-calendar requests, respond normally as an academic assistant.`
               
               calendarResult = await calendarMCP.createEvent(eventData);
               
-              if (calendarResult && calendarResult.success) {
+              if (calendarResult && (calendarResult.success || calendarResult.id || calendarResult.eventId)) {
                 const startDate = new Date(operationData.event.start);
                 const endDate = new Date(operationData.event.end);
                 responseMessage = `✅ **Event created successfully!**\n\n📅 **${eventData.summary}**\n📍 ${eventData.location || 'No location specified'}\n🕐 ${startDate.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} - ${endDate.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })}\n\n${eventData.description ? '📝 ' + eventData.description : ''}`;
@@ -690,8 +690,22 @@ For non-calendar requests, respond normally as an academic assistant.`
               responseMessage = events.length > 0 ? 
                 `📅 **Found ${events.length} event(s):**\n\n` + 
                 events.slice(0, 10).map(event => {
-                  const start = new Date(event.start?.dateTime || event.start?.date);
-                  return `• **${event.summary || 'Untitled Event'}**\n  🕐 ${start.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}${event.location ? '\n  📍 ' + event.location : ''}`;
+                  // Handle both Google Calendar API format and our formatted events
+                  let startTime;
+                  if (event.start?.dateTime) {
+                    startTime = new Date(event.start.dateTime);
+                  } else if (event.start?.date) {
+                    startTime = new Date(event.start.date);
+                  } else if (event.start && typeof event.start === 'string') {
+                    startTime = new Date(event.start);
+                  } else {
+                    startTime = new Date(); // fallback
+                  }
+                  
+                  const title = event.summary || event.title || 'Untitled Event';
+                  const location = event.location || '';
+                  
+                  return `• **${title}**\n  🕐 ${startTime.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}${location ? '\n  📍 ' + location : ''}`;
                 }).join('\n\n') :
                 `📅 **No events found** for the specified time period.`;
               break;
@@ -1751,8 +1765,37 @@ app.get('/calendar/mcp/search', authenticate, async (req, res) => {
 // Create a new calendar event
 app.post('/calendar/mcp/events', authenticate, async (req, res) => {
   try {
+    console.log('Creating event with data:', JSON.stringify(req.body, null, 2));
     const event = await calendarMCP.createEvent(req.body);
-    res.status(201).json(event);
+    console.log('MCP returned event:', JSON.stringify(event, null, 2));
+    
+    // Normalize the event data to ensure consistent format for the UI
+    let normalizedEvent = event;
+    if (event && typeof event === 'object') {
+      // If event has nested start/end objects, leave them as is
+      // If event has flat start/end strings, wrap them in objects
+      if (event.start && typeof event.start === 'string') {
+        normalizedEvent = {
+          ...event,
+          start: {
+            dateTime: event.start,
+            timeZone: 'Asia/Kolkata'
+          }
+        };
+      }
+      if (event.end && typeof event.end === 'string') {
+        normalizedEvent = {
+          ...normalizedEvent,
+          end: {
+            dateTime: event.end,
+            timeZone: 'Asia/Kolkata'
+          }
+        };
+      }
+    }
+    
+    console.log('Returning normalized event:', JSON.stringify(normalizedEvent, null, 2));
+    res.status(201).json(normalizedEvent);
   } catch (err) {
     console.error('MCP create event error:', err);
     res.status(500).json({ error: 'Failed to create event: ' + err.message });

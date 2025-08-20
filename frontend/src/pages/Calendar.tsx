@@ -126,20 +126,178 @@ const Calendar: React.FC = () => {
   
   const { toast } = useToast();
 
+  // Helper function to parse events from MCP message format
+  const parseEventsFromMessage = (message: string): GoogleCalendarEvent[] => {
+    const events: GoogleCalendarEvent[] = [];
+    
+    if (message.includes('Found ') && message.includes('event(s):')) {
+      const eventBlocks = message.split(/\n\n\d+\. /).slice(1);
+      
+      for (const block of eventBlocks) {
+        const lines = block.split('\n');
+        const eventLine = lines[0];
+        
+        if (eventLine && eventLine.startsWith('Event: ')) {
+          const summary = eventLine.replace('Event: ', '');
+          const idLine = lines.find(l => l.startsWith('Event ID: '));
+          const descLine = lines.find(l => l.startsWith('Description: '));
+          const startLine = lines.find(l => l.startsWith('Start: '));
+          const endLine = lines.find(l => l.startsWith('End: '));
+          const locationLine = lines.find(l => l.startsWith('Location: '));
+          const viewLine = lines.find(l => l.startsWith('View: '));
+          
+          if (idLine && startLine && endLine) {
+            // Parse date strings from "Mon, Jan 01, 2024, 10:00 AM GMT+5:30" format
+            const parseDateTime = (dateStr: string) => {
+              const cleanStr = dateStr.replace(/ GMT.*$/, '');
+              try {
+                return new Date(cleanStr).toISOString();
+              } catch (e) {
+                console.warn('Failed to parse date:', dateStr);
+                return new Date().toISOString(); // fallback
+              }
+            };
+            
+            events.push({
+              id: idLine.replace('Event ID: ', ''),
+              summary,
+              description: descLine ? descLine.replace('Description: ', '') : '',
+              start: {
+                dateTime: parseDateTime(startLine.replace('Start: ', '')),
+                timeZone: 'Asia/Kolkata'
+              },
+              end: {
+                dateTime: parseDateTime(endLine.replace('End: ', '')),
+                timeZone: 'Asia/Kolkata'
+              },
+              location: locationLine ? locationLine.replace('Location: ', '') : '',
+              htmlLink: viewLine ? viewLine.replace('View: ', '') : ''
+            });
+          }
+        }
+      }
+    }
+    
+    return events;
+  };
+  
+  // Helper function to normalize event data to ensure consistent format
+  const normalizeEventData = (event: any): GoogleCalendarEvent => {
+    // Handle different event formats from various sources
+    const normalized: GoogleCalendarEvent = {
+      id: event.id || event.eventId || '',
+      summary: event.summary || event.title || 'Untitled Event',
+      description: event.description || '',
+      start: {
+        dateTime: '',
+        timeZone: 'Asia/Kolkata'
+      },
+      end: {
+        dateTime: '',
+        timeZone: 'Asia/Kolkata'
+      },
+      location: event.location || '',
+      attendees: event.attendees || [],
+      colorId: event.colorId,
+      status: event.status,
+      htmlLink: event.htmlLink
+    };
+    
+    // Normalize start time
+    if (event.start) {
+      if (typeof event.start === 'string') {
+        normalized.start.dateTime = event.start;
+      } else if (event.start.dateTime) {
+        normalized.start.dateTime = event.start.dateTime;
+        normalized.start.timeZone = event.start.timeZone || 'Asia/Kolkata';
+      } else if (event.start.date) {
+        // Handle all-day events
+        normalized.start.dateTime = new Date(event.start.date + 'T00:00:00').toISOString();
+      }
+    }
+    
+    // Normalize end time
+    if (event.end) {
+      if (typeof event.end === 'string') {
+        normalized.end.dateTime = event.end;
+      } else if (event.end.dateTime) {
+        normalized.end.dateTime = event.end.dateTime;
+        normalized.end.timeZone = event.end.timeZone || 'Asia/Kolkata';
+      } else if (event.end.date) {
+        // Handle all-day events
+        normalized.end.dateTime = new Date(event.end.date + 'T23:59:59').toISOString();
+      }
+    }
+    
+    // Ensure valid dates
+    if (!normalized.start.dateTime || isNaN(new Date(normalized.start.dateTime).getTime())) {
+      normalized.start.dateTime = new Date().toISOString();
+    }
+    if (!normalized.end.dateTime || isNaN(new Date(normalized.end.dateTime).getTime())) {
+      normalized.end.dateTime = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hour later
+    }
+    
+    return normalized;
+  };
+
   // MCP Calendar API Functions
   const fetchMCPCalendars = async () => {
     try {
       const token = getToken();
-      const response = await fetch(`${API_URL}/calendar/mcp/calendars`, {
+      const response = await fetch(`${API_URL}/calendar/calendars`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (response.ok) {
         const data = await response.json();
-        setCalendars(data.items || []);
+        console.log('Calendars API response:', data);
+        // Handle the structured response from endpoints-minimal.js
+        if (data.success && data.data) {
+          // Handle both structured and MCP raw response
+          let calendarList = [];
+          if (data.data.calendars && Array.isArray(data.data.calendars)) {
+            calendarList = data.data.calendars;
+          } else if (data.data.message && typeof data.data.message === 'string') {
+            // Parse from MCP message format
+            calendarList = parseCalendarsFromMessage(data.data.message);
+          }
+          setCalendars(calendarList);
+        } else if (data.calendars) {
+          setCalendars(data.calendars);
+        }
+      } else {
+        console.error('Failed to fetch calendars - Status:', response.status);
       }
     } catch (error) {
       console.error('Failed to fetch calendars:', error);
     }
+  };
+  
+  // Helper function to parse calendars from MCP message format
+  const parseCalendarsFromMessage = (message: string): Calendar[] => {
+    const calendars: Calendar[] = [];
+    const blocks = message.split('\n\n').filter(block => block.trim());
+    
+    for (const block of blocks) {
+      const lines = block.split('\n');
+      const titleLine = lines[0];
+      
+      if (titleLine && titleLine.includes('(') && titleLine.includes(')')) {
+        const match = titleLine.match(/^(.+?)\s*\(([^)]+)\)$/);
+        if (match) {
+          const [, summary, id] = match;
+          const isPrimary = titleLine.includes('PRIMARY');
+          
+          calendars.push({
+            id: id.trim(),
+            summary: summary.trim(),
+            primary: isPrimary,
+            selected: isPrimary
+          });
+        }
+      }
+    }
+    
+    return calendars;
   };
 
   const fetchMCPEvents = async () => {
@@ -151,21 +309,39 @@ const Calendar: React.FC = () => {
       const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, now.getDate());
       
       const params = new URLSearchParams({
-        calendarId: selectedCalendars.join(','),
-        timeMin: now.toISOString().slice(0, 19),
-        timeMax: nextMonth.toISOString().slice(0, 19),
+        calendarId: selectedCalendars[0] || 'primary', // Use first selected calendar
+        timeMin: now.toISOString(),
+        timeMax: nextMonth.toISOString(),
         timeZone: 'Asia/Kolkata'
       });
       
-      const response = await fetch(`${API_URL}/calendar/mcp/events?${params}`, {
+      const response = await fetch(`${API_URL}/calendar/events?${params}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       
       if (response.ok) {
         const data = await response.json();
-        setGoogleEvents(data.items || []);
+        console.log('Events API response:', data);
+        // Handle the structured response from endpoints-minimal.js
+        let eventList = [];
+        if (data.success && data.data) {
+          // Handle both structured and MCP raw response
+          if (data.data.events && Array.isArray(data.data.events)) {
+            eventList = data.data.events;
+          } else if (data.data.message && typeof data.data.message === 'string') {
+            // Parse from MCP message format
+            eventList = parseEventsFromMessage(data.data.message);
+          }
+        } else if (data.events) {
+          eventList = data.events;
+        }
+        
+        // Normalize event data to ensure proper format
+        const normalizedEvents = eventList.map(event => normalizeEventData(event));
+        setGoogleEvents(normalizedEvents);
       } else {
-        throw new Error('Failed to fetch Google Calendar events');
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'Failed to fetch Google Calendar events');
       }
     } catch (err: any) {
       setError(err.message || 'Failed to load events');
@@ -182,12 +358,18 @@ const Calendar: React.FC = () => {
   const fetchColors = async () => {
     try {
       const token = getToken();
-      const response = await fetch(`${API_URL}/calendar/mcp/colors`, {
+      const response = await fetch(`${API_URL}/calendar/colors`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (response.ok) {
         const data = await response.json();
-        setColors(data.event || {});
+        console.log('Colors API response:', data);
+        // Handle the structured response from endpoints-minimal.js
+        if (data.success && data.data) {
+          setColors(data.data.colors?.event || data.data.event || {});
+        } else {
+          setColors(data.event || {});
+        }
       }
     } catch (error) {
       console.error('Failed to fetch colors:', error);
@@ -211,22 +393,43 @@ const Calendar: React.FC = () => {
         timeZone: 'Asia/Kolkata'
       });
       
-      const response = await fetch(`${API_URL}/calendar/mcp/search?${params}`, {
+      const response = await fetch(`${API_URL}/calendar/events/search?${params}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       
       if (response.ok) {
         const data = await response.json();
-        setGoogleEvents(data.items || []);
+        console.log('Search API response:', data);
+        // Handle the structured response from endpoints-minimal.js
+        let eventList = [];
+        if (data.success && data.data) {
+          // Handle both structured and MCP raw response
+          if (data.data.events && Array.isArray(data.data.events)) {
+            eventList = data.data.events;
+          } else if (data.data.message && typeof data.data.message === 'string') {
+            // Parse from MCP message format
+            eventList = parseEventsFromMessage(data.data.message);
+          }
+        } else if (data.events) {
+          eventList = data.events;
+        }
+        
+        // Normalize event data to ensure proper format
+        const normalizedEvents = eventList.map(event => normalizeEventData(event));
+        setGoogleEvents(normalizedEvents);
+        
         toast({
           title: "Search Complete",
-          description: `Found ${data.items?.length || 0} events`
+          description: `Found ${normalizedEvents.length} events matching "${searchQuery}"`
         });
+      } else {
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'Search failed');
       }
-    } catch (error) {
+    } catch (error: any) {
       toast({
         title: "Search Failed",
-        description: "Failed to search events",
+        description: error.message || "Failed to search events",
         variant: "destructive"
       });
     } finally {
@@ -278,7 +481,7 @@ const Calendar: React.FC = () => {
     setAddingEvent(true);
     try {
       const token = getToken();
-      const response = await fetch(`${API_URL}/calendar/mcp/events`, {
+      const response = await fetch(`${API_URL}/calendar/events`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -321,7 +524,7 @@ const Calendar: React.FC = () => {
   const deleteEvent = async (eventId: string) => {
     try {
       const token = getToken();
-      const response = await fetch(`${API_URL}/calendar/mcp/events/${eventId}?calendarId=primary`, {
+      const response = await fetch(`${API_URL}/calendar/events/${eventId}?calendarId=primary`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` }
       });
@@ -391,29 +594,85 @@ const Calendar: React.FC = () => {
         </p>
       </Card>
 
+      {/* Calendar Status and Debug Info */}
+      <Card className="p-4 mb-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-medium text-gray-900">Calendar Status</h3>
+            <p className="text-xs text-gray-600">
+              {loading ? 'Loading...' : error ? `Error: ${error}` : `${googleEvents.length} events found, ${calendars.length} calendars`}
+            </p>
+          </div>
+          <Button size="sm" onClick={fetchMCPEvents} disabled={loading}>
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+          </Button>
+        </div>
+      </Card>
+
       {/* Upcoming Events */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-4">
           <h2 className="text-lg font-semibold text-gray-900">Upcoming Events</h2>
           
-          {events.map((event) => (
-            <Card key={event.id} className={`p-4 border-l-4 ${getEventColor(event.type)}`}>
-              <div className="flex items-start justify-between">
-                <div className="flex items-start space-x-3">
-                  {getEventIcon(event.type)}
-                  <div>
-                    <h3 className="font-medium text-gray-900">{event.title}</h3>
-                    <p className="text-sm text-gray-600">
-                      {new Date(event.date).toLocaleDateString()} at {event.time}
-                    </p>
-                    <span className="inline-block mt-1 px-2 py-1 text-xs bg-white rounded-full capitalize">
-                      {event.type}
-                    </span>
+          {loading ? (
+            <Card className="p-6 text-center">
+              <RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2" />
+              <p>Loading events...</p>
+            </Card>
+          ) : error ? (
+            <Card className="p-6 text-center border-red-200 bg-red-50">
+              <AlertCircle className="w-6 h-6 text-red-500 mx-auto mb-2" />
+              <p className="text-red-700">{error}</p>
+              <Button size="sm" onClick={fetchMCPEvents} className="mt-2">Retry</Button>
+            </Card>
+          ) : googleEvents.length === 0 ? (
+            <Card className="p-6 text-center">
+              <CalendarIcon className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+              <h3 className="text-lg font-medium text-gray-900 mb-2">No events found</h3>
+              <p className="text-gray-600 mb-4">Create your first event or check your calendar sync.</p>
+              <Button onClick={() => setShowAddModal(true)}>
+                <Plus className="w-4 h-4 mr-2" />
+                Add Event
+              </Button>
+            </Card>
+          ) : (
+            googleEvents.map((event) => (
+              <Card key={event.id} className={`p-4 border-l-4 border-l-blue-500 bg-blue-50`}>
+                <div className="flex items-start justify-between">
+                  <div className="flex items-start space-x-3">
+                    <CalendarIcon className="w-4 h-4 text-blue-500 mt-1" />
+                    <div className="flex-1">
+                      <h3 className="font-medium text-gray-900">{event.summary}</h3>
+                      <p className="text-sm text-gray-600">
+                        {new Date(event.start.dateTime).toLocaleString('en-IN', { 
+                          timeZone: 'Asia/Kolkata',
+                          dateStyle: 'medium',
+                          timeStyle: 'short'
+                        })}
+                      </p>
+                      {event.location && (
+                        <p className="text-xs text-gray-500 flex items-center mt-1">
+                          <MapPin className="w-3 h-3 mr-1" />
+                          {event.location}
+                        </p>
+                      )}
+                      {event.description && (
+                        <p className="text-xs text-gray-600 mt-1">{event.description}</p>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <Button size="sm" variant="outline" onClick={() => setEditingEvent(event)}>
+                      <Edit className="w-3 h-3" />
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => deleteEvent(event.id)}>
+                      <Trash2 className="w-3 h-3" />
+                    </Button>
                   </div>
                 </div>
-              </div>
-            </Card>
-          ))}
+              </Card>
+            ))
+          )}
         </div>
 
         {/* Mini Calendar */}
@@ -429,14 +688,17 @@ const Calendar: React.FC = () => {
           </Card>
 
           <Card className="p-4">
-            <h3 className="font-semibold mb-3">This Week</h3>
+            <h3 className="font-semibold mb-3">Upcoming Events</h3>
             <div className="space-y-2">
-              {events.slice(0, 3).map((event) => (
+              {googleEvents.slice(0, 3).map((event) => (
                 <div key={event.id} className="flex items-center space-x-2 text-sm">
-                  {getEventIcon(event.type)}
-                  <span className="truncate">{event.title}</span>
+                  <CalendarIcon className="w-4 h-4 text-gray-500" />
+                  <span className="truncate">{event.summary}</span>
                 </div>
               ))}
+              {googleEvents.length === 0 && (
+                <p className="text-xs text-gray-500">No upcoming events</p>
+              )}
             </div>
           </Card>
         </div>
@@ -452,46 +714,53 @@ const Calendar: React.FC = () => {
                 <Label htmlFor="title">Event Title</Label>
                 <Input
                   id="title"
-                  value={newEvent.title}
-                  onChange={(e) => setNewEvent(prev => ({ ...prev, title: e.target.value }))}
+                  value={newEvent.summary}
+                  onChange={(e) => setNewEvent(prev => ({ ...prev, summary: e.target.value }))}
                   placeholder="Enter event title"
                 />
               </div>
               <div>
-                <Label htmlFor="date">Date</Label>
+                <Label htmlFor="start">Start Date & Time</Label>
                 <Input
-                  id="date"
-                  type="date"
-                  value={newEvent.date}
-                  onChange={(e) => setNewEvent(prev => ({ ...prev, date: e.target.value }))}
+                  id="start"
+                  type="datetime-local"
+                  value={newEvent.start}
+                  onChange={(e) => setNewEvent(prev => ({ ...prev, start: e.target.value + ':00' }))}
                 />
               </div>
               <div>
-                <Label htmlFor="time">Time</Label>
+                <Label htmlFor="end">End Date & Time</Label>
                 <Input
-                  id="time"
-                  type="time"
-                  value={newEvent.time}
-                  onChange={(e) => setNewEvent(prev => ({ ...prev, time: e.target.value }))}
+                  id="end"
+                  type="datetime-local"
+                  value={newEvent.end}
+                  onChange={(e) => setNewEvent(prev => ({ ...prev, end: e.target.value + ':00' }))}
                 />
               </div>
               <div>
-                <Label htmlFor="type">Type</Label>
-                <select
-                  id="type"
-                  value={newEvent.type}
-                  onChange={(e) => setNewEvent(prev => ({ ...prev, type: e.target.value as Event['type'] }))}
-                  className="w-full p-2 border border-gray-300 rounded-md"
-                >
-                  <option value="personal">Personal</option>
-                  <option value="class">Class</option>
-                  <option value="exam">Exam</option>
-                  <option value="assignment">Assignment</option>
-                </select>
+                <Label htmlFor="description">Description (Optional)</Label>
+                <Textarea
+                  id="description"
+                  value={newEvent.description}
+                  onChange={(e) => setNewEvent(prev => ({ ...prev, description: e.target.value }))}
+                  placeholder="Event description"
+                  rows={2}
+                />
+              </div>
+              <div>
+                <Label htmlFor="location">Location (Optional)</Label>
+                <Input
+                  id="location"
+                  value={newEvent.location}
+                  onChange={(e) => setNewEvent(prev => ({ ...prev, location: e.target.value }))}
+                  placeholder="Event location"
+                />
               </div>
             </div>
             <div className="flex space-x-3 mt-6">
-              <Button onClick={addEvent} className="flex-1">Add Event</Button>
+              <Button onClick={createMCPEvent} disabled={addingEvent} className="flex-1">
+                {addingEvent ? 'Creating...' : 'Add Event'}
+              </Button>
               <Button variant="outline" onClick={() => setShowAddModal(false)} className="flex-1">
                 Cancel
               </Button>
