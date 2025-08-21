@@ -272,29 +272,88 @@ const MCPCalendar: React.FC = () => {
   const fetchMCPCalendars = async () => {
     try {
       const token = getToken();
-      const response = await fetch(`${API_URL}/calendar/calendars`, {
+      const response = await fetch(`${API_URL}/calendar/mcp/calendars`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (response.ok) {
         const data = await response.json();
-        console.log('Calendars response:', data);
-        // Handle the structured response from endpoints-minimal.js
-        let calendarList = [];
-        if (data.success && data.data && data.data.calendars) {
-          calendarList = data.data.calendars;
-        } else if (data.success && data.data && typeof data.data.message === 'string') {
-          // Parse from MCP message format
-          calendarList = parseCalendarsFromMessage(data.data.message);
-        } else if (data.calendars) {
-          calendarList = data.calendars;
-        } else if (data.message) {
-          calendarList = parseCalendarsFromMessage(data.message);
+        console.log('Raw calendars response:', JSON.stringify(data, null, 2));
+        
+        // Handle the specific structure from your server logs
+        let calendarList: Calendar[] = [];
+        
+        // Based on your server logs, the structure is: { calendars: [...] }
+        if (Array.isArray(data.calendars)) {
+          calendarList = data.calendars.map((cal: any) => ({
+            id: cal.id || '',
+            summary: cal.name || cal.summary || cal.displayName || cal.id || 'Unnamed Calendar',
+            description: cal.description || '',
+            primary: !!cal.primary,
+            selected: !!cal.selected,
+            backgroundColor: cal.backgroundColor,
+            foregroundColor: cal.foregroundColor
+          }));
+        }
+        // Fallback for other possible structures
+        else if (data.success && data.data && Array.isArray(data.data.calendars)) {
+          calendarList = data.data.calendars.map((cal: any) => ({
+            id: cal.id || '',
+            summary: cal.name || cal.summary || cal.displayName || cal.id || 'Unnamed Calendar',
+            description: cal.description || '',
+            primary: !!cal.primary,
+            selected: !!cal.selected,
+            backgroundColor: cal.backgroundColor,
+            foregroundColor: cal.foregroundColor
+          }));
+        }
+        // Handle wrapped structure with items array
+        else if (data.success && data.data && data.data.calendars && Array.isArray(data.data.calendars.items)) {
+          calendarList = data.data.calendars.items.map((cal: any) => ({
+            id: cal.id || '',
+            summary: cal.name || cal.summary || cal.displayName || cal.id || 'Unnamed Calendar',
+            description: cal.description || '',
+            primary: !!cal.primary,
+            selected: !!cal.selected,
+            backgroundColor: cal.backgroundColor,
+            foregroundColor: cal.foregroundColor
+          }));
+        }
+        // Handle direct items array
+        else if (Array.isArray(data.items)) {
+          calendarList = data.items.map((cal: any) => ({
+            id: cal.id || '',
+            summary: cal.name || cal.summary || cal.displayName || cal.id || 'Unnamed Calendar',
+            description: cal.description || '',
+            primary: !!cal.primary,
+            selected: !!cal.selected,
+            backgroundColor: cal.backgroundColor,
+            foregroundColor: cal.foregroundColor
+          }));
+        }
+        // Message parsing fallback
+        else if (data.message || (data.data && data.data.message)) {
+          calendarList = parseCalendarsFromMessage(data.message || data.data.message);
         }
         
-        console.log('Parsed calendars:', calendarList);
+        console.log('Final parsed calendars:', calendarList);
         setCalendars(calendarList);
+        
+        // Ensure a sensible default selection if current selection isn't present
+        if (calendarList.length > 0) {
+          const primaryCal = calendarList.find(c => c.primary);
+          const defaultId = primaryCal ? primaryCal.id : calendarList[0].id;
+          console.log('Setting default calendar:', defaultId, 'Primary found:', !!primaryCal);
+          setSelectedCalendars(prev => {
+            const current = prev && prev.length > 0 && calendarList.some(c => c.id === prev[0]) ? prev : [defaultId];
+            console.log('Selected calendars updated to:', current);
+            return current;
+          });
+          setNewEvent(prev => ({ ...prev, calendarId: prev.calendarId && calendarList.some(c => c.id === prev.calendarId) ? prev.calendarId : defaultId }));
+        }
       } else {
-        console.error('Failed to fetch calendars:', response.statusText);
+        console.error('Failed to fetch calendars - Status:', response.status, response.statusText);
+        const errorData = await response.json().catch(() => ({}));
+        console.error('Error response:', errorData);
       }
     } catch (error) {
       console.error('Failed to fetch calendars:', error);
@@ -316,7 +375,7 @@ const MCPCalendar: React.FC = () => {
         timeZone: 'Asia/Kolkata'
       });
       
-      const response = await fetch(`${API_URL}/calendar/events?${params}`, {
+      const response = await fetch(`${API_URL}/calendar/mcp/events?${params}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       
@@ -359,7 +418,7 @@ const MCPCalendar: React.FC = () => {
   const fetchColors = async () => {
     try {
       const token = getToken();
-      const response = await fetch(`${API_URL}/calendar/colors`, {
+      const response = await fetch(`${API_URL}/calendar/mcp/colors`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (response.ok) {
@@ -392,7 +451,7 @@ const MCPCalendar: React.FC = () => {
         timeZone: 'Asia/Kolkata'
       });
       
-      const response = await fetch(`${API_URL}/calendar/events/search?${params}`, {
+      const response = await fetch(`${API_URL}/calendar/mcp/search?${params}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       
@@ -441,7 +500,7 @@ const MCPCalendar: React.FC = () => {
       const now = new Date();
       const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
       
-      const response = await fetch(`${API_URL}/calendar/freebusy`, {
+      const response = await fetch(`${API_URL}/calendar/mcp/availability`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -451,6 +510,7 @@ const MCPCalendar: React.FC = () => {
           calendars: [selectedCalendars[0] || 'primary'],
           timeMin: now.toISOString(),
           timeMax: tomorrow.toISOString(),
+          duration: 60,
           timeZone: 'Asia/Kolkata'
         })
       });
@@ -463,11 +523,14 @@ const MCPCalendar: React.FC = () => {
           title: "Availability Found",
           description: `Found ${slots.length} available slots`
         });
+      } else {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.message || 'Availability request failed');
       }
-    } catch (error) {
+    } catch (error: any) {
       toast({
         title: "Availability Check Failed",
-        description: "Failed to find available slots",
+        description: error.message || "Failed to find available slots",
         variant: "destructive"
       });
     }
@@ -487,7 +550,7 @@ const MCPCalendar: React.FC = () => {
         end: newEvent.end.includes(':') && newEvent.end.split(':').length === 2 ? newEvent.end + ':00' : newEvent.end
       };
       
-      const response = await fetch(`${API_URL}/calendar/events`, {
+      const response = await fetch(`${API_URL}/calendar/mcp/events`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -532,7 +595,7 @@ const MCPCalendar: React.FC = () => {
   const deleteEvent = async (eventId: string) => {
     try {
       const token = getToken();
-      const response = await fetch(`${API_URL}/calendar/events/${eventId}?calendarId=primary`, {
+      const response = await fetch(`${API_URL}/calendar/mcp/events/${eventId}?calendarId=primary`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` }
       });
@@ -577,7 +640,7 @@ const MCPCalendar: React.FC = () => {
         reminders: newEvent.reminders
       };
       
-      const response = await fetch(`${API_URL}/calendar/events/${editingEvent.id}`, {
+      const response = await fetch(`${API_URL}/calendar/mcp/events/${editingEvent.id}`, {
         method: 'PUT',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -782,18 +845,74 @@ const MCPCalendar: React.FC = () => {
         <TabsContent value="events" className="space-y-4">
           <div className="flex items-center space-x-4 mb-6">
             <Select
-              value={selectedCalendars[0]}
-              onValueChange={(value) => setSelectedCalendars([value])}
+              value={selectedCalendars[0] || ''}
+              onValueChange={(value) => {
+                console.log('Calendar dropdown changed to:', value);
+                setSelectedCalendars([value]);
+              }}
             >
-              <SelectTrigger className="w-48">
-                <SelectValue placeholder="Select Calendar" />
+              <SelectTrigger className="w-80 h-11 text-gray-900 bg-white border border-gray-300 shadow-sm">
+                <div className="flex items-center justify-between w-full">
+                  <div className="flex flex-col items-start min-w-0 flex-1">
+                    <SelectValue placeholder="Select Calendar">
+                      {selectedCalendars[0] && calendars.length > 0 && (() => {
+                        const selectedCal = calendars.find(c => c.id === selectedCalendars[0]);
+                        if (selectedCal) {
+                          return (
+                            <div className="flex flex-col items-start">
+                              <span className="text-sm font-medium text-gray-900 truncate max-w-72">
+                                {selectedCal.summary}
+                              </span>
+                              {selectedCal.primary && (
+                                <span className="text-xs text-blue-600">Primary</span>
+                              )}
+                            </div>
+                          );
+                        }
+                        return "Select Calendar";
+                      })()}
+                    </SelectValue>
+                  </div>
+                </div>
               </SelectTrigger>
-              <SelectContent>
-                {calendars.map((calendar) => (
-                  <SelectItem key={calendar.id} value={calendar.id}>
-                    {calendar.summary}
-                  </SelectItem>
-                ))}
+              <SelectContent className="bg-white border border-gray-200 shadow-lg z-50 max-h-72 overflow-auto w-96">
+                {calendars.length === 0 ? (
+                  <div className="px-3 py-2 text-gray-500 text-sm">No calendars available</div>
+                ) : (
+                  calendars.map((calendar) => {
+                    console.log('Rendering calendar option:', calendar.id, calendar.summary);
+                    return (
+                      <div
+                        key={calendar.id}
+                        className="text-gray-900 hover:bg-gray-100 focus:bg-gray-100 cursor-pointer px-3 py-3 min-h-[3rem] border-0 outline-0"
+                        onClick={() => {
+                          console.log('Calendar dropdown changed to:', calendar.id);
+                          setSelectedCalendars([calendar.id]);
+                        }}
+                      >
+                        <div className="flex flex-col items-start w-full">
+                          <span className="font-medium text-gray-900 text-sm leading-tight truncate max-w-80">
+                            {calendar.summary}
+                          </span>
+                          <div className="flex items-center gap-2 mt-1">
+                            {calendar.primary && (
+                              <span className="text-xs text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">
+                                Primary
+                              </span>
+                            )}
+                            {calendar.backgroundColor && (
+                              <div 
+                                className="w-3 h-3 rounded-full border border-gray-300" 
+                                style={{ backgroundColor: calendar.backgroundColor }}
+                                title={`Calendar color: ${calendar.backgroundColor}`}
+                              />
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
               </SelectContent>
             </Select>
             <Button variant="outline" onClick={findAvailableSlots}>
@@ -983,29 +1102,50 @@ const MCPCalendar: React.FC = () => {
             </CardHeader>
             <CardContent>
               <div className="space-y-3">
-                {calendars.map((calendar) => (
-                  <div key={calendar.id} className="flex items-center justify-between p-3 border rounded-lg">
-                    <div>
-                      <h4 className="font-medium">{calendar.summary}</h4>
-                      {calendar.description && (
-                        <p className="text-sm text-gray-600">{calendar.description}</p>
-                      )}
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      {calendar.primary && <Badge>Primary</Badge>}
-                      <Switch
-                        checked={selectedCalendars.includes(calendar.id)}
-                        onCheckedChange={(checked) => {
-                          if (checked) {
-                            setSelectedCalendars(prev => [...prev, calendar.id]);
-                          } else {
-                            setSelectedCalendars(prev => prev.filter(id => id !== calendar.id));
-                          }
-                        }}
-                      />
-                    </div>
+                {calendars.length === 0 ? (
+                  <div className="text-center py-6 text-gray-500">
+                    <p>No calendars found. Please connect your Google Calendar.</p>
                   </div>
-                ))}
+                ) : (
+                  calendars.map((calendar) => (
+                    <div key={calendar.id} className="flex items-center justify-between p-4 border border-gray-200 rounded-lg bg-white hover:bg-gray-50 transition-colors">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-3">
+                          <h4 className="font-semibold text-gray-900 text-base">
+                            {calendar.summary}
+                          </h4>
+                          {calendar.backgroundColor && (
+                            <div 
+                              className="w-4 h-4 rounded-full border border-gray-300 flex-shrink-0" 
+                              style={{ backgroundColor: calendar.backgroundColor }}
+                              title={`Calendar color: ${calendar.backgroundColor}`}
+                            />
+                          )}
+                        </div>
+                        {calendar.description && (
+                          <p className="text-sm text-gray-600 mt-1">{calendar.description}</p>
+                        )}
+                        <div className="flex items-center gap-2 mt-2">
+                          {calendar.primary && (
+                            <Badge className="bg-blue-100 text-blue-800 text-xs">Primary Calendar</Badge>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex items-center space-x-3">
+                        <Switch
+                          checked={selectedCalendars.includes(calendar.id)}
+                          onCheckedChange={(checked) => {
+                            if (checked) {
+                              setSelectedCalendars(prev => [...prev, calendar.id]);
+                            } else {
+                              setSelectedCalendars(prev => prev.filter(id => id !== calendar.id));
+                            }
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
             </CardContent>
           </Card>
@@ -1071,12 +1211,16 @@ const MCPCalendar: React.FC = () => {
                 value={newEvent.calendarId}
                 onValueChange={(value) => setNewEvent(prev => ({ ...prev, calendarId: value }))}
               >
-                <SelectTrigger>
-                  <SelectValue />
+                <SelectTrigger className="text-gray-900 bg-white border-gray-300">
+                  <SelectValue className="text-gray-900" />
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent className="bg-white border border-gray-200 shadow-lg">
                   {calendars.map((calendar) => (
-                    <SelectItem key={calendar.id} value={calendar.id}>
+                    <SelectItem 
+                      key={calendar.id} 
+                      value={calendar.id}
+                      className="text-gray-900 hover:bg-gray-100 focus:bg-gray-100 cursor-pointer px-3 py-2"
+                    >
                       {calendar.summary}
                     </SelectItem>
                   ))}
