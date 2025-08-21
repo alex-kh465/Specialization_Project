@@ -1818,7 +1818,7 @@ app.get('/oauth2callback', async (req, res) => {
     
     // Exchange code for tokens
     try {
-      const tokens = await calendarService.getAccessToken(code);
+const tokens = await calendarMCP.getAccessToken(code);
       
       // Success page that closes the popup
       res.send(`
