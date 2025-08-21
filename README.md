@@ -151,7 +151,7 @@ npm install
 2. Set up the following tables in your database:
 
 ```sql
--- Users profiles table
+-- Users profiles table (updated with budget features)
 CREATE TABLE profiles (
   id SERIAL PRIMARY KEY,
   user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
@@ -162,6 +162,8 @@ CREATE TABLE profiles (
   timezone TEXT,
   referral_code TEXT,
   is_premium BOOLEAN DEFAULT FALSE,
+  monthly_budget DECIMAL(10,2) DEFAULT 5000.00,
+  category_limits JSONB DEFAULT '{}',
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );

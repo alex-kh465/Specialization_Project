@@ -28,9 +28,11 @@ const Weather: React.FC = () => {
   const [weather, setWeather] = useState<WeatherData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [city, setCity] = useState('Delhi');
+  const [city, setCity] = useState('');
   const [quote, setQuote] = useState('');
   const [suggestion, setSuggestion] = useState('');
+  const [locationDetected, setLocationDetected] = useState(false);
+  const [locationData, setLocationData] = useState<any>(null);
 
   const quotes = [
     "The expert in anything was once a beginner. Keep learning! 📚",
@@ -40,12 +42,57 @@ const Weather: React.FC = () => {
     "Education is the passport to the future. Study hard! 🎓"
   ];
 
-  const fetchWeather = async (cityName: string = city) => {
+  // Function to detect user's location via IP
+  const detectLocation = async () => {
+    try {
+      const token = getToken();
+      const res = await fetch(`${API_URL}/location/detect`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+      });
+      
+      if (!res.ok) {
+        throw new Error('Failed to detect location');
+      }
+      
+      const data = await res.json();
+      setLocationData(data);
+      setLocationDetected(true);
+      
+      // Update city display name
+      setCity(data.city || 'Unknown Location');
+      
+      return data;
+    } catch (err: any) {
+      console.error('Location detection failed:', err);
+      throw err;
+    }
+  };
+
+  // Function to fetch weather data
+  const fetchWeather = async (cityName?: string, coordinates?: {lat: number, lon: number}) => {
     setLoading(true);
     setError('');
     try {
       const token = getToken();
-      const res = await fetch(`${API_URL}/weather?city=${encodeURIComponent(cityName)}`, {
+      let url = `${API_URL}/weather`;
+      const params = new URLSearchParams();
+      
+      if (coordinates) {
+        // Use coordinates if available (more accurate)
+        params.append('lat', coordinates.lat.toString());
+        params.append('lon', coordinates.lon.toString());
+      } else if (cityName) {
+        // Fall back to city name
+        params.append('city', cityName);
+      }
+      
+      if (params.toString()) {
+        url += `?${params.toString()}`;
+      }
+      
+      const res = await fetch(url, {
         headers: {
           'Authorization': `Bearer ${token}`,
         },
@@ -63,6 +110,27 @@ const Weather: React.FC = () => {
     } finally {
       setLoading(false);
     }
+  };
+
+  // Function to auto-detect location and fetch weather
+  const fetchWeatherWithAutoLocation = async () => {
+    try {
+      const location = await detectLocation();
+      await fetchWeather(undefined, {
+        lat: location.latitude,
+        lon: location.longitude
+      });
+    } catch (err) {
+      // Fallback to Bangalore if location detection fails
+      console.log('Auto-location failed, falling back to Bangalore');
+      setCity('Bangalore');
+      await fetchWeather('Bangalore');
+    }
+  };
+
+  // Function to manually update location
+  const handleLocationUpdate = async () => {
+    await fetchWeatherWithAutoLocation();
   };
 
   const getWeatherSuggestions = (condition: string, temp: number) => {
@@ -98,12 +166,13 @@ const Weather: React.FC = () => {
   useEffect(() => {
     // Set random quote on component mount
     setQuote(quotes[Math.floor(Math.random() * quotes.length)]);
-    // Fetch weather data
-    fetchWeather();
+    // Auto-detect location and fetch weather data
+    fetchWeatherWithAutoLocation();
   }, []);
 
   const handleCityChange = () => {
     if (city.trim()) {
+      setLocationDetected(false);
       fetchWeather(city.trim());
     }
   };
@@ -128,11 +197,38 @@ const Weather: React.FC = () => {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Weather & Daily Tips</h1>
           <p className="text-red-600">Error: {error}</p>
+          <p className="text-sm text-gray-600 mt-2">
+            {error.includes('location') 
+              ? 'Location detection failed. You can try searching for your city manually below.'
+              : 'Weather service is temporarily unavailable. Please try again or search for a specific city.'}
+          </p>
         </div>
-        <Button onClick={() => fetchWeather()} className="mt-4">
-          <RefreshCw className="w-4 h-4 mr-2" />
-          Try Again
-        </Button>
+        
+        {/* Manual location search in case of error */}
+        <Card className="p-4">
+          <div className="flex items-center gap-2">
+            <Input
+              placeholder="Try entering your city name (e.g., Mumbai, Bangalore, Chennai)"
+              value={city}
+              onChange={(e) => setCity(e.target.value)}
+              onKeyPress={(e) => e.key === 'Enter' && handleCityChange()}
+              className="flex-1"
+            />
+            <Button onClick={handleCityChange} disabled={!city.trim()}>
+              Search Weather
+            </Button>
+          </div>
+        </Card>
+        
+        <div className="flex gap-2">
+          <Button onClick={() => fetchWeatherWithAutoLocation()} className="mt-4">
+            <RefreshCw className="w-4 h-4 mr-2" />
+            Try Auto-location Again
+          </Button>
+          <Button variant="outline" onClick={() => fetchWeather('Bangalore')} className="mt-4">
+            Use Default (Bangalore)
+          </Button>
+        </div>
       </div>
     );
   }
@@ -149,6 +245,27 @@ const Weather: React.FC = () => {
         <p className="text-gray-600">Stay informed and motivated throughout your day</p>
       </div>
 
+      {/* Location Search */}
+      {!locationDetected && (
+        <Card className="p-4 mb-6">
+          <div className="flex items-center gap-2">
+            <Input
+              placeholder="Enter city name (e.g., Bangalore, Mumbai, Chennai)"
+              value={city}
+              onChange={(e) => setCity(e.target.value)}
+              onKeyPress={(e) => e.key === 'Enter' && handleCityChange()}
+              className="flex-1"
+            />
+            <Button onClick={handleCityChange} disabled={!city.trim()}>
+              Search
+            </Button>
+            <Button variant="outline" onClick={handleLocationUpdate}>
+              📍 Auto-detect
+            </Button>
+          </div>
+        </Card>
+      )}
+
       {/* Current Weather */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card className="p-6">
@@ -156,8 +273,13 @@ const Weather: React.FC = () => {
             <div>
               <h2 className="text-lg font-semibold text-gray-900">Current Weather</h2>
               <p className="text-sm text-gray-600">{weather.location}</p>
+              {locationDetected && locationData && (
+                <p className="text-xs text-green-600 mt-1">
+                  📍 Location auto-detected via IP ({locationData.region}, {locationData.country})
+                </p>
+              )}
             </div>
-            <Button variant="outline" size="sm">
+            <Button variant="outline" size="sm" onClick={handleLocationUpdate}>
               📍 Update Location
             </Button>
           </div>
