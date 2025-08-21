@@ -316,5 +316,20 @@ Network Trash Folder
 Temporary Items
 .apdisk 
 
-#Google Credenntials
+# Backend credentials and sensitive files
+/backend/.env
 /backend/.google-tokens.json
+/backend/calendar/google-calendar-mcp/.env
+/backend/calendar/google-calendar-mcp/.tokens.json
+/backend/calendar/google-calendar-mcp/gcp-oauth.keys.json
+/backend/calendar/mcp/config/gcp-oauth.keys.json
+/backend/calendar/mcp/config/tokens.json
+
+# Google OAuth and API credentials
+**/gcp-oauth.keys.json
+**/.tokens.json
+**/google-tokens.json
+**/*-oauth*.json
+**/*credential*.json
+**/*secret*.json
+**/*token*.json
