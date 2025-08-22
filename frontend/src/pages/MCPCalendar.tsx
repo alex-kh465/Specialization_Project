@@ -208,6 +208,17 @@ const MCPCalendar: React.FC = () => {
   const [editingEvent, setEditingEvent] = useState<GoogleCalendarEvent | null>(null);
   const [addingEvent, setAddingEvent] = useState(false);
   
+  // Attendees management
+  const [attendeeInput, setAttendeeInput] = useState('');
+  
+  // Enhanced reminders management
+  const [showAdvancedReminders, setShowAdvancedReminders] = useState(false);
+  const [newReminder, setNewReminder] = useState({ method: 'popup', minutes: 15 });
+  
+  // Search results state
+  const [searchResults, setSearchResults] = useState<GoogleCalendarEvent[]>([]);
+  const [showSearchResults, setShowSearchResults] = useState(false);
+  
   const { toast } = useToast();
 
   // Helper function to normalize event data to ensure consistent format
@@ -435,53 +446,77 @@ const MCPCalendar: React.FC = () => {
   };
 
   const searchEvents = async () => {
-    if (!searchQuery.trim()) return;
+    if (!searchQuery.trim()) {
+      toast({
+        title: "Search Query Required",
+        description: "Please enter a search term to find events",
+        variant: "destructive"
+      });
+      return;
+    }
     
     setIsSearching(true);
     try {
       const token = getToken();
       const now = new Date();
-      const nextMonth = new Date(now.getFullYear(), now.getMonth() + 3, now.getDate());
+      // Search broader range - 6 months back to 6 months forward
+      const pastDate = new Date(now.getFullYear(), now.getMonth() - 6, now.getDate());
+      const futureDate = new Date(now.getFullYear(), now.getMonth() + 6, now.getDate());
       
       const params = new URLSearchParams({
-        q: searchQuery,
-        calendarId: 'primary',
-        timeMin: dateRange.start || now.toISOString(),
-        timeMax: dateRange.end || nextMonth.toISOString(),
+        query: searchQuery,
+        calendarId: selectedCalendars[0] || 'primary',
+        timeMin: dateRange.start || pastDate.toISOString(),
+        timeMax: dateRange.end || futureDate.toISOString(),
         timeZone: 'Asia/Kolkata'
       });
+      
+      console.log('Search params:', params.toString());
       
       const response = await fetch(`${API_URL}/calendar/mcp/search?${params}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       
+      console.log('Search response status:', response.status);
+      
       if (response.ok) {
         const data = await response.json();
-        console.log('Search response:', data);
+        console.log('Search response data:', JSON.stringify(data, null, 2));
+        
         // Handle the structured response from endpoints-minimal.js
         let eventList = [];
-        if (data.success && data.data && data.data.events) {
+        if (data.success && data.data && Array.isArray(data.data.events)) {
           eventList = data.data.events;
+          console.log('Using data.data.events:', eventList.length);
         } else if (data.success && data.data && typeof data.data.message === 'string') {
           // Parse from MCP message format
+          console.log('Parsing from MCP message format');
           eventList = parseEventsFromMessage(data.data.message);
-        } else if (data.events) {
+        } else if (Array.isArray(data.events)) {
           eventList = data.events;
-        } else if (data.message) {
+          console.log('Using direct data.events:', eventList.length);
+        } else if (typeof data.message === 'string') {
+          console.log('Parsing from direct message format');
           eventList = parseEventsFromMessage(data.message);
+        } else {
+          console.log('No recognizable event data structure found in:', data);
         }
         
         // Normalize all events to ensure consistent format
         const normalizedEvents = eventList.map(event => normalizeEventData(event)).filter(event => event !== null);
-        setGoogleEvents(normalizedEvents);
+        console.log('Final normalized events:', normalizedEvents.length);
+        
+        setSearchResults(normalizedEvents);
+        setShowSearchResults(true);
         
         toast({
           title: "Search Complete",
           description: `Found ${normalizedEvents.length} events matching "${searchQuery}"`
         });
       } else {
-        const errorData = await response.json();
-        throw new Error(errorData.message || 'Search failed');
+        const errorData = await response.json().catch(() => ({}));
+        console.error('Search failed with status:', response.status, 'Error:', errorData);
+        throw new Error(errorData.error || errorData.message || `Search failed with status ${response.status}`);
       }
     } catch (error: any) {
       toast({
@@ -566,16 +601,7 @@ const MCPCalendar: React.FC = () => {
           description: data.message || "Your event has been added to Google Calendar"
         });
         setShowAddModal(false);
-        setNewEvent({
-          calendarId: 'primary',
-          summary: '',
-          description: '',
-          start: '',
-          end: '',
-          location: '',
-          attendees: [],
-          reminders: { useDefault: true, overrides: [] }
-        });
+        resetEventForm();
         fetchMCPEvents();
       } else {
         const errorData = await response.json();
@@ -656,16 +682,7 @@ const MCPCalendar: React.FC = () => {
           description: data.message || "Your event has been updated successfully"
         });
         setEditingEvent(null);
-        setNewEvent({
-          calendarId: 'primary',
-          summary: '',
-          description: '',
-          start: '',
-          end: '',
-          location: '',
-          attendees: [],
-          reminders: { useDefault: true, overrides: [] }
-        });
+        resetEventForm();
         fetchMCPEvents();
       } else {
         const errorData = await response.json();
@@ -695,7 +712,150 @@ const MCPCalendar: React.FC = () => {
       colorId: event.colorId,
       reminders: { useDefault: true, overrides: [] }
     });
+    setAttendeeInput('');
+    setShowAdvancedReminders(false);
     setShowAddModal(true);
+  };
+
+  // Attendees management functions
+  const validateEmail = (email: string): boolean => {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return emailRegex.test(email.trim());
+  };
+  
+  const addAttendee = () => {
+    const email = attendeeInput.trim();
+    
+    if (!email) {
+      toast({
+        title: "Invalid Input",
+        description: "Please enter an email address",
+        variant: "destructive"
+      });
+      return;
+    }
+    
+    if (!validateEmail(email)) {
+      toast({
+        title: "Invalid Email",
+        description: "Please enter a valid email address (e.g., user@example.com)",
+        variant: "destructive"
+      });
+      return;
+    }
+    
+    // Check if attendee already exists
+    if (newEvent.attendees.some(attendee => attendee.email.toLowerCase() === email.toLowerCase())) {
+      toast({
+        title: "Duplicate Email",
+        description: "This attendee has already been added",
+        variant: "destructive"
+      });
+      return;
+    }
+    
+    // Add attendee to list
+    setNewEvent(prev => ({
+      ...prev,
+      attendees: [...prev.attendees, { email }]
+    }));
+    
+    setAttendeeInput('');
+    
+    toast({
+      title: "Attendee Added",
+      description: `${email} will receive an invitation when the event is created`
+    });
+  };
+  
+  const removeAttendee = (index: number) => {
+    const removedEmail = newEvent.attendees[index]?.email;
+    setNewEvent(prev => ({
+      ...prev,
+      attendees: prev.attendees.filter((_, i) => i !== index)
+    }));
+    
+    if (removedEmail) {
+      toast({
+        title: "Attendee Removed",
+        description: `${removedEmail} has been removed from the attendees list`
+      });
+    }
+  };
+  
+  // Enhanced reminders management functions
+  const reminderTimeOptions = [
+    { value: 0, label: 'At event time' },
+    { value: 5, label: '5 minutes before' },
+    { value: 10, label: '10 minutes before' },
+    { value: 15, label: '15 minutes before' },
+    { value: 30, label: '30 minutes before' },
+    { value: 60, label: '1 hour before' },
+    { value: 120, label: '2 hours before' },
+    { value: 1440, label: '1 day before' },
+    { value: 2880, label: '2 days before' },
+    { value: 10080, label: '1 week before' }
+  ];
+  
+  const reminderMethodOptions = [
+    { value: 'popup', label: 'Popup notification' },
+    { value: 'email', label: 'Email notification' }
+  ];
+  
+  const addCustomReminder = () => {
+    const currentReminders = newEvent.reminders?.overrides || [];
+    const newRemindersList = [...currentReminders, { ...newReminder }];
+    
+    setNewEvent(prev => ({
+      ...prev,
+      reminders: {
+        useDefault: false,
+        overrides: newRemindersList
+      }
+    }));
+    
+    toast({
+      title: "Reminder Added",
+      description: `${newReminder.method} reminder ${newReminder.minutes === 0 ? 'at event time' : 
+        newReminder.minutes < 60 ? `${newReminder.minutes} minutes before` : 
+        newReminder.minutes < 1440 ? `${Math.floor(newReminder.minutes / 60)} hour(s) before` : 
+        `${Math.floor(newReminder.minutes / 1440)} day(s) before`}`
+    });
+  };
+  
+  const removeCustomReminder = (index: number) => {
+    const currentReminders = newEvent.reminders?.overrides || [];
+    const updatedReminders = currentReminders.filter((_, i) => i !== index);
+    
+    setNewEvent(prev => ({
+      ...prev,
+      reminders: {
+        useDefault: updatedReminders.length === 0,
+        overrides: updatedReminders
+      }
+    }));
+    
+    toast({
+      title: "Reminder Removed",
+      description: "Custom reminder has been removed"
+    });
+  };
+  
+  // Reset form function
+  const resetEventForm = () => {
+    setNewEvent({
+      calendarId: calendars.length > 0 ? (calendars.find(c => c.primary)?.id || calendars[0].id) : 'primary',
+      summary: '',
+      description: '',
+      start: '',
+      end: '',
+      location: '',
+      attendees: [],
+      reminders: { useDefault: true, overrides: [] }
+    });
+    setAttendeeInput('');
+    setShowAdvancedReminders(false);
+    setNewReminder({ method: 'popup', minutes: 15 });
   };
 
   useEffect(() => {
@@ -743,9 +903,20 @@ const MCPCalendar: React.FC = () => {
             <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
             Refresh
           </Button>
-          <Dialog open={showAddModal} onOpenChange={setShowAddModal}>
+          <Dialog open={showAddModal} onOpenChange={(open) => {
+            setShowAddModal(open);
+            if (!open) {
+              // Always reset form when closing
+              resetEventForm();
+              setEditingEvent(null);
+            }
+          }}>
             <DialogTrigger asChild>
-              <Button>
+              <Button onClick={() => {
+                // Ensure form is clean when opening new event
+                setEditingEvent(null);
+                resetEventForm();
+              }}>
                 <Plus className="w-4 h-4 mr-2" />
                 New Event
               </Button>
@@ -1027,12 +1198,30 @@ const MCPCalendar: React.FC = () => {
                   placeholder="Search events..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      searchEvents();
+                    }
+                  }}
                   className="flex-1"
                 />
                 <Button onClick={searchEvents} disabled={isSearching}>
                   <Search className={`w-4 h-4 mr-2 ${isSearching ? 'animate-spin' : ''}`} />
                   Search
                 </Button>
+                {showSearchResults && (
+                  <Button 
+                    variant="outline" 
+                    onClick={() => {
+                      setShowSearchResults(false);
+                      setSearchResults([]);
+                      setSearchQuery('');
+                    }}
+                  >
+                    Clear
+                  </Button>
+                )}
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -1054,6 +1243,85 @@ const MCPCalendar: React.FC = () => {
               </div>
             </CardContent>
           </Card>
+          
+          {/* Search Results */}
+          {showSearchResults && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center justify-between">
+                  <span>Search Results</span>
+                  <Badge variant="secondary">{searchResults.length} events found</Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {searchResults.length === 0 ? (
+                  <div className="text-center py-8 text-gray-500">
+                    <Search className="w-12 h-12 mx-auto mb-4 text-gray-400" />
+                    <p>No events found matching your search criteria</p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {searchResults.map((event) => {
+                      const { date, time } = formatEventTime(event);
+                      return (
+                        <Card key={event.id} className="hover:shadow-md transition-shadow border-l-4 border-l-blue-500">
+                          <CardContent className="p-4">
+                            <div className="flex items-start justify-between">
+                              <div className="flex-1">
+                                <div className="flex items-center space-x-2 mb-2">
+                                  <h3 className="font-semibold text-lg">{event.summary}</h3>
+                                  {event.colorId && colors[event.colorId] && (
+                                    <div 
+                                      className="w-3 h-3 rounded-full"
+                                      style={{ backgroundColor: colors[event.colorId].background }}
+                                    />
+                                  )}
+                                </div>
+                                <div className="flex items-center space-x-4 text-sm text-gray-600 mb-2">
+                                  <div className="flex items-center space-x-1">
+                                    <Clock className="w-4 h-4" />
+                                    <span>{date} • {time}</span>
+                                  </div>
+                                  {event.location && (
+                                    <div className="flex items-center space-x-1">
+                                      <MapPin className="w-4 h-4" />
+                                      <span>{event.location}</span>
+                                    </div>
+                                  )}
+                                  {event.attendees && event.attendees.length > 0 && (
+                                    <div className="flex items-center space-x-1">
+                                      <Users className="w-4 h-4" />
+                                      <span>{event.attendees.length} attendees</span>
+                                    </div>
+                                  )}
+                                </div>
+                                {event.description && (
+                                  <p className="text-gray-700 text-sm">{event.description}</p>
+                                )}
+                              </div>
+                              <div className="flex space-x-2">
+                                <Button variant="ghost" size="sm" asChild>
+                                  <a href={event.htmlLink} target="_blank" rel="noopener noreferrer">
+                                    <Eye className="w-4 h-4" />
+                                  </a>
+                                </Button>
+                                <Button variant="ghost" size="sm" onClick={() => startEditingEvent(event)}>
+                                  <Edit className="w-4 h-4" />
+                                </Button>
+                                <Button variant="ghost" size="sm" onClick={() => deleteEvent(event.id)}>
+                                  <Trash2 className="w-4 h-4" />
+                                </Button>
+                              </div>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      );
+                    })}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
         </TabsContent>
 
         {/* Availability Tab */}
@@ -1219,29 +1487,236 @@ const MCPCalendar: React.FC = () => {
                     <SelectItem 
                       key={calendar.id} 
                       value={calendar.id}
-                      className="text-gray-900 hover:bg-gray-100 focus:bg-gray-100 cursor-pointer px-3 py-2"
+                      className="text-black hover:bg-gray-100 focus:bg-gray-100 cursor-pointer px-3 py-3 [&>span[data-radix-select-item-indicator]]:hidden"
                     >
-                      {calendar.summary}
+                      <div className="flex flex-col items-start w-full gap-1">
+                        <div className="flex items-center gap-2">
+                          <div 
+                            className="w-2 h-2 rounded-full flex-shrink-0" 
+                            style={{ backgroundColor: calendar.backgroundColor || '#4285f4' }}
+                          />
+                          <span className="font-medium text-sm text-black">
+                            {calendar.summary}
+                          </span>
+                        </div>
+                        {calendar.primary && (
+                          <span className="text-xs text-blue-600 ml-4">Primary</span>
+                        )}
+                      </div>
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
 
-            <div className="flex items-center space-x-2">
-              <Switch
-                checked={!newEvent.reminders?.useDefault}
-                onCheckedChange={(checked) => 
-                  setNewEvent(prev => ({
-                    ...prev,
-                    reminders: {
-                      useDefault: !checked,
-                      overrides: checked ? [{ method: 'popup', minutes: 15 }] : []
-                    }
-                  }))
-                }
-              />
-              <Label>Custom reminders (15 min before)</Label>
+            {/* Attendees Section */}
+            <div>
+              <Label className="flex items-center space-x-2">
+                <Users className="w-4 h-4" />
+                <span>Attendees (optional)</span>
+              </Label>
+              <div className="space-y-3">
+                {/* Attendee Input */}
+                <div className="flex space-x-2">
+                  <Input
+                    placeholder="Enter email address (e.g., john@example.com)"
+                    value={attendeeInput}
+                    onChange={(e) => setAttendeeInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        addAttendee();
+                      }
+                    }}
+                    className="flex-1"
+                  />
+                  <Button 
+                    type="button" 
+                    variant="outline" 
+                    onClick={addAttendee}
+                    disabled={!attendeeInput.trim()}
+                  >
+                    <Plus className="w-4 h-4" />
+                  </Button>
+                </div>
+                
+                {/* Show existing attendees */}
+                {newEvent.attendees.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="text-sm text-gray-600 font-medium">Invited attendees ({newEvent.attendees.length}):</div>
+                    <div className="flex flex-wrap gap-2 max-h-24 overflow-y-auto">
+                      {newEvent.attendees.map((attendee, index) => (
+                        <Badge 
+                          key={index} 
+                          variant="secondary" 
+                          className="text-xs flex items-center space-x-1 bg-blue-50 text-blue-700 hover:bg-blue-100"
+                        >
+                          <Users className="w-3 h-3" />
+                          <span>{attendee.email}</span>
+                          <button
+                            type="button"
+                            onClick={() => removeAttendee(index)}
+                            className="ml-1 hover:text-red-600 focus:outline-none"
+                          >
+                            ×
+                          </button>
+                        </Badge>
+                      ))}
+                    </div>
+                    <div className="text-xs text-gray-500">
+                      💡 Tip: Invitations will be sent to all attendees when the event is created
+                    </div>
+                  </div>
+                )}
+                
+                {/* Helpful hints for attendees */}
+                {newEvent.attendees.length === 0 && (
+                  <div className="text-xs text-gray-500 bg-gray-50 p-2 rounded border">
+                    💡 Add attendees by entering their email addresses. Press Enter or click + to add each email.
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Enhanced Reminders Section */}
+            <div className="space-y-4">
+              <Label className="flex items-center space-x-2">
+                <Bell className="w-4 h-4" />
+                <span>Event Reminders</span>
+              </Label>
+              
+              <div className="space-y-3">
+                <div className="flex items-center space-x-2">
+                  <Switch
+                    checked={!newEvent.reminders?.useDefault}
+                    onCheckedChange={(checked) => {
+                      if (!checked) {
+                        // Switch to default reminders
+                        setNewEvent(prev => ({
+                          ...prev,
+                          reminders: { useDefault: true, overrides: [] }
+                        }));
+                        setShowAdvancedReminders(false);
+                      } else {
+                        // Switch to custom reminders with a default one
+                        setNewEvent(prev => ({
+                          ...prev,
+                          reminders: {
+                            useDefault: false,
+                            overrides: [{ method: 'popup', minutes: 15 }]
+                          }
+                        }));
+                        setShowAdvancedReminders(true);
+                      }
+                    }}
+                  />
+                  <div className="flex-1">
+                    <Label className="font-medium">
+                      {newEvent.reminders?.useDefault ? 'Use Google Calendar defaults' : 'Custom reminders'}
+                    </Label>
+                    <p className="text-xs text-gray-500 mt-1">
+                      {newEvent.reminders?.useDefault 
+                        ? 'Uses your Google Calendar default notification settings'
+                        : 'Set custom reminder times and methods for this event'
+                      }
+                    </p>
+                  </div>
+                </div>
+                
+                {/* Custom Reminders Section */}
+                {showAdvancedReminders && !newEvent.reminders?.useDefault && (
+                  <div className="space-y-4 pl-4 border-l-2 border-blue-200">
+                    {/* Add New Reminder */}
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <Label className="text-sm">Reminder Time</Label>
+                        <Select
+                          value={newReminder.minutes.toString()}
+                          onValueChange={(value) => setNewReminder(prev => ({ ...prev, minutes: parseInt(value) }))}
+                        >
+                          <SelectTrigger className="text-gray-900">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent className="bg-white border border-gray-200 shadow-lg">
+                            {reminderTimeOptions.map((option) => (
+                              <SelectItem key={option.value} value={option.value.toString()}>
+                                {option.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      
+                      <div>
+                        <Label className="text-sm">Notification Method</Label>
+                        <Select
+                          value={newReminder.method}
+                          onValueChange={(value) => setNewReminder(prev => ({ ...prev, method: value as 'popup' | 'email' }))}
+                        >
+                          <SelectTrigger className="text-gray-900">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent className="bg-white border border-gray-200 shadow-lg">
+                            {reminderMethodOptions.map((option) => (
+                              <SelectItem key={option.value} value={option.value}>
+                                {option.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                    
+                    <Button 
+                      type="button" 
+                      variant="outline" 
+                      size="sm"
+                      onClick={addCustomReminder}
+                      className="w-full"
+                    >
+                      <Plus className="w-4 h-4 mr-2" />
+                      Add Reminder
+                    </Button>
+                    
+                    {/* Current Reminders List */}
+                    {newEvent.reminders?.overrides && newEvent.reminders.overrides.length > 0 && (
+                      <div className="space-y-2">
+                        <Label className="text-sm font-medium">Active Reminders ({newEvent.reminders.overrides.length}):</Label>
+                        <div className="space-y-2 max-h-24 overflow-y-auto">
+                          {newEvent.reminders.overrides.map((reminder, index) => {
+                            const timeLabel = reminderTimeOptions.find(opt => opt.value === reminder.minutes)?.label || `${reminder.minutes} minutes before`;
+                            const methodLabel = reminderMethodOptions.find(opt => opt.value === reminder.method)?.label || reminder.method;
+                            
+                            return (
+                              <div key={index} className="flex items-center justify-between p-2 bg-blue-50 border border-blue-200 rounded text-sm">
+                                <div className="flex items-center space-x-2">
+                                  <Bell className="w-3 h-3 text-blue-600" />
+                                  <span className="text-blue-800">
+                                    {methodLabel} • {timeLabel}
+                                  </span>
+                                </div>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => removeCustomReminder(index)}
+                                  className="h-6 w-6 p-0 hover:bg-red-100 hover:text-red-600"
+                                >
+                                  ×
+                                </Button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                    
+                    <div className="text-xs text-gray-500 bg-blue-50 p-2 rounded">
+                      💡 You can add multiple reminders with different timings and methods
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="flex space-x-3 pt-4">
@@ -1255,16 +1730,7 @@ const MCPCalendar: React.FC = () => {
               <Button variant="outline" onClick={() => {
                 setShowAddModal(false);
                 setEditingEvent(null);
-                setNewEvent({
-                  calendarId: 'primary',
-                  summary: '',
-                  description: '',
-                  start: '',
-                  end: '',
-                  location: '',
-                  attendees: [],
-                  reminders: { useDefault: true, overrides: [] }
-                });
+                resetEventForm();
               }}>
                 Cancel
               </Button>
