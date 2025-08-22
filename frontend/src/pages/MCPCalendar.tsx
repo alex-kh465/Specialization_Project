@@ -56,6 +56,10 @@ interface GoogleCalendarEvent {
   recurring?: boolean;
   status?: string;
   htmlLink?: string;
+  reminders?: {
+    useDefault: boolean;
+    overrides: Array<{method: string; minutes: number}>;
+  };
 }
 
 interface Calendar {
@@ -233,7 +237,8 @@ const MCPCalendar: React.FC = () => {
       attendees: event.attendees || [],
       colorId: event.colorId,
       status: event.status,
-      htmlLink: event.htmlLink
+      htmlLink: event.htmlLink,
+      reminders: event.reminders || { useDefault: true, overrides: [] }
     };
     
     // Normalize start time
@@ -688,40 +693,116 @@ const MCPCalendar: React.FC = () => {
     setCustomReminders([]);
   };
 
-  const startEditingEvent = (event: GoogleCalendarEvent) => {
+  const fetchEventDetails = async (eventId: string) => {
+    try {
+      const token = getToken();
+      const response = await fetch(`${API_URL}/calendar/mcp/events/${eventId}?calendarId=primary`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        console.log('Detailed event data:', data);
+        
+        // Handle the structured response
+        let eventData = null;
+        if (data.success && data.data) {
+          eventData = data.data;
+        } else if (data.event) {
+          eventData = data.event;
+        } else {
+          eventData = data;
+        }
+        
+        return normalizeEventData(eventData);
+      } else {
+        console.error('Failed to fetch event details');
+        return null;
+      }
+    } catch (error) {
+      console.error('Error fetching event details:', error);
+      return null;
+    }
+  };
+
+  const startEditingEvent = async (event: GoogleCalendarEvent) => {
     setEditingEvent(event);
+    
+    // First try to get detailed event data from backend
+    const detailedEvent = await fetchEventDetails(event.id);
+    const eventToUse = detailedEvent || event;
+    
     // Find primary calendar or use the event's calendar
     const primaryCal = calendars.find(c => c.primary);
     const defaultCalendarId = primaryCal ? primaryCal.id : 'primary';
     
-    // Prepare attendees data
-    const eventAttendees = event.attendees?.map(a => ({ email: a.email })) || [];
+    // Prepare attendees data - ensure we have email addresses
+    const eventAttendees = eventToUse.attendees?.map(a => ({ 
+      email: a.email || a.displayName || a 
+    })).filter(a => a.email) || [];
     
-    // Prepare reminders data - check if event has custom reminders
-    const eventReminders = event.reminders || { useDefault: true, overrides: [] };
-    const hasCustomReminders = eventReminders.overrides && eventReminders.overrides.length > 0;
+    // Enhanced reminders data processing
+    let eventReminders = { useDefault: true, overrides: [] };
+    let hasCustomReminders = false;
+    
+    // Check multiple possible sources for reminders
+    if (eventToUse.reminders) {
+      eventReminders = eventToUse.reminders;
+    } else if (detailedEvent && detailedEvent.reminders) {
+      eventReminders = detailedEvent.reminders;
+    } else if (event.reminders) {
+      eventReminders = event.reminders;
+    }
+    
+    // Determine if there are custom reminders
+    hasCustomReminders = !eventReminders.useDefault && 
+                        eventReminders.overrides && 
+                        eventReminders.overrides.length > 0;
+    
+    // Debug logging
+    console.log('🔍 REMINDER DEBUGGING:');
+    console.log('Original event reminders:', event.reminders);
+    console.log('Detailed event reminders:', detailedEvent?.reminders);
+    console.log('Final event reminders:', eventReminders);
+    console.log('Has custom reminders:', hasCustomReminders);
+    console.log('Use default:', eventReminders.useDefault);
+    console.log('Overrides:', eventReminders.overrides);
+    
+    // Prepare the reminder state for the form
+    const formReminders = {
+      useDefault: eventReminders.useDefault !== false, // Default to true if undefined
+      overrides: eventReminders.overrides || []
+    };
+    
+    // If we have overrides but useDefault is true, it means we should show custom reminders
+    if (eventReminders.overrides && eventReminders.overrides.length > 0) {
+      formReminders.useDefault = false;
+      hasCustomReminders = true;
+    }
+    
+    console.log('📝 Form reminders will be set to:', formReminders);
+    console.log('📝 Custom reminders state will be set to:', eventReminders.overrides || []);
     
     setNewEvent({
       calendarId: defaultCalendarId,
-      summary: event.summary,
-      description: event.description || '',
-      start: event.start.dateTime.slice(0, 19),
-      end: event.end.dateTime.slice(0, 19),
-      location: event.location || '',
+      summary: eventToUse.summary,
+      description: eventToUse.description || '',
+      start: eventToUse.start.dateTime.slice(0, 19),
+      end: eventToUse.end.dateTime.slice(0, 19),
+      location: eventToUse.location || '',
       attendees: eventAttendees,
-      colorId: event.colorId,
-      reminders: eventReminders
+      colorId: eventToUse.colorId,
+      reminders: formReminders
     });
     
-    // Set custom reminders if they exist
-    if (hasCustomReminders) {
-      setCustomReminders(eventReminders.overrides);
-    } else {
-      setCustomReminders([]);
-    }
+    // Set custom reminders state
+    const customRemindersToSet = hasCustomReminders ? (eventReminders.overrides || []) : [];
+    setCustomReminders(customRemindersToSet);
     
-    console.log('Editing event with attendees:', eventAttendees);
-    console.log('Editing event with reminders:', eventReminders);
+    console.log('✅ Final states set:');
+    console.log('- newEvent.reminders:', formReminders);
+    console.log('- customReminders:', customRemindersToSet);
+    console.log('- Switch should be:', !formReminders.useDefault);
     
     setShowAddModal(true);
   };
@@ -818,19 +899,26 @@ const MCPCalendar: React.FC = () => {
   // Helper functions for custom reminders
   const addCustomReminder = (method: string, minutes: number) => {
     const newReminder = { method, minutes };
+    console.log('➕ Adding custom reminder:', newReminder);
+    
     if (!customReminders.some(r => r.method === method && r.minutes === minutes)) {
-      setCustomReminders(prev => [...prev, newReminder]);
+      const updatedReminders = [...customReminders, newReminder];
+      setCustomReminders(updatedReminders);
       setNewEvent(prev => ({
         ...prev,
         reminders: {
           useDefault: false,
-          overrides: [...customReminders, newReminder]
+          overrides: updatedReminders
         }
       }));
+      console.log('✅ Added reminder. New list:', updatedReminders);
+    } else {
+      console.log('⚠️ Reminder already exists');
     }
   };
 
   const removeCustomReminder = (index: number) => {
+    console.log('🗑️ Removing reminder at index:', index);
     const updated = customReminders.filter((_, i) => i !== index);
     setCustomReminders(updated);
     setNewEvent(prev => ({
@@ -840,6 +928,7 @@ const MCPCalendar: React.FC = () => {
         overrides: updated
       }
     }));
+    console.log('✅ Removed reminder. New list:', updated);
   };
 
   const clearSearchResults = () => {
@@ -1449,7 +1538,7 @@ const MCPCalendar: React.FC = () => {
 
             {/* Attendees Section */}
             <div className="space-y-3">
-              <Label className="text-sm font-medium">Attendees</Label>
+              <Label className="text-sm font-medium text-gray-900">Attendees</Label>
               <div className="flex space-x-2">
                 <Input
                   value={attendeeInput}
@@ -1475,37 +1564,55 @@ const MCPCalendar: React.FC = () => {
               </div>
               
               {newEvent.attendees.length === 0 ? (
-                <div className="text-center py-4 bg-gray-50 rounded-lg">
+                <div className="text-center py-6 bg-gray-50 rounded-lg border border-gray-200">
                   <Users className="w-6 h-6 mx-auto mb-2 text-gray-400" />
                   <p className="text-sm text-gray-500">No attendees added yet</p>
                   <p className="text-xs text-gray-400 mt-1">Add email addresses to invite people</p>
                 </div>
               ) : (
                 <div className="space-y-3">
-                  <div className="flex items-center space-x-2 bg-blue-50 px-3 py-2 rounded-lg border border-blue-200">
+                  <div className="flex items-center space-x-2 px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg">
                     <Users className="w-4 h-4 text-blue-600" />
-                    <span className="text-sm font-medium text-blue-800">
+                    <span className="text-sm font-medium text-blue-700">
                       {newEvent.attendees.length} attendee{newEvent.attendees.length !== 1 ? 's' : ''} invited
                     </span>
                   </div>
-                  <div className="max-h-32 overflow-y-auto space-y-2 bg-white p-2 rounded border">
-                    {newEvent.attendees.map((attendee, index) => (
-                      <div 
-                        key={index} 
-                        className="flex items-center justify-between bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 shadow-sm"
-                      >
-                        <span className="text-sm font-medium text-blue-900">{attendee.email}</span>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => removeAttendee(attendee.email)}
-                          className="h-6 w-6 p-0 hover:bg-red-100 text-red-600 hover:text-red-800 border border-red-200 hover:border-red-300 rounded"
+                  <div className="border border-gray-200 rounded-lg bg-white">
+                    <div className="max-h-40 overflow-y-auto">
+                      {newEvent.attendees.map((attendee, index) => (
+                        <div 
+                          key={index} 
+                          className={`flex items-center justify-between px-4 py-3 hover:bg-gray-50 transition-colors ${
+                            index !== newEvent.attendees.length - 1 ? 'border-b border-gray-100' : ''
+                          }`}
                         >
-                          <span className="text-sm font-bold">×</span>
-                        </Button>
-                      </div>
-                    ))}
+                          <div className="flex items-center space-x-3 flex-1">
+                            <div className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center">
+                              <Users className="w-4 h-4 text-gray-600" />
+                            </div>
+                            <div className="flex flex-col flex-1 min-w-0">
+                              <span className="text-sm font-medium text-gray-900 truncate">
+                                {attendee.email || 'No email'}
+                              </span>
+                              {attendee.displayName && attendee.displayName !== attendee.email && (
+                                <span className="text-xs text-gray-500 truncate">
+                                  {attendee.displayName}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => removeAttendee(attendee.email)}
+                            className="h-8 w-8 p-0 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-full"
+                          >
+                            <span className="text-lg">×</span>
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 </div>
               )}
@@ -1523,19 +1630,26 @@ const MCPCalendar: React.FC = () => {
                   <Switch
                     checked={!newEvent.reminders?.useDefault}
                     onCheckedChange={(checked) => {
+                      console.log('🔄 Switch toggled to:', checked);
+                      console.log('Current state:', { useDefault: newEvent.reminders?.useDefault, customReminders });
+                      
                       if (!checked) {
+                        // Switch to default reminders
                         setCustomReminders([]);
                         setNewEvent(prev => ({
                           ...prev,
                           reminders: { useDefault: true, overrides: [] }
                         }));
+                        console.log('✅ Switched to default reminders');
                       } else {
-                        const defaultReminder = { method: 'popup', minutes: 15 };
-                        setCustomReminders([defaultReminder]);
+                        // Switch to custom reminders
+                        const existingReminders = customReminders.length > 0 ? customReminders : [{ method: 'popup', minutes: 15 }];
+                        setCustomReminders(existingReminders);
                         setNewEvent(prev => ({
                           ...prev,
-                          reminders: { useDefault: false, overrides: [defaultReminder] }
+                          reminders: { useDefault: false, overrides: existingReminders }
                         }));
+                        console.log('✅ Switched to custom reminders:', existingReminders);
                       }
                     }}
                   />
@@ -1546,7 +1660,7 @@ const MCPCalendar: React.FC = () => {
                     <span className="text-xs text-gray-500">
                       {newEvent.reminders?.useDefault ? 
                         'Using your default calendar reminder settings' : 
-                        'Custom reminders will override default settings'
+                        `Custom reminders active (${customReminders.length})`
                       }
                     </span>
                   </div>
