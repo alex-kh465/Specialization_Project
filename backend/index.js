@@ -608,6 +608,7 @@ CRITICAL - GOOGLE CALENDAR API DATETIME FORMAT REQUIREMENTS:
 
 For non-calendar requests, respond normally as an academic assistant.`
 
+    // Try without tools first to avoid tool validation errors
     const groqRes = await fetch(process.env.GROQ_API_URL, {
       method: 'POST',
       headers: {
@@ -615,39 +616,13 @@ For non-calendar requests, respond normally as an academic assistant.`
         'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
       },
       body: JSON.stringify({
-        model: 'openai/gpt-oss-120b',
+        model: 'llama-3.3-70b-versatile',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: message }
         ],
-        tools: [
-          {
-            type: "function",
-            function: {
-              name: "commentary",
-              description: "Internal tool for structured responses and calendar operations",
-              parameters: {
-                type: "object",
-                properties: {
-                  type: { type: "string", description: "Type of operation" },
-                  params: { 
-                    type: "object", 
-                    description: "Parameters for the operation",
-                    additionalProperties: true 
-                  },
-                  event: { 
-                    type: "object", 
-                    description: "Event data for calendar operations",
-                    additionalProperties: true 
-                  },
-                  message: { type: "string", description: "User-friendly message" }
-                },
-                additionalProperties: true
-              }
-            }
-          }
-        ],
-        tool_choice: "auto"
+        max_tokens: 1024,
+        temperature: 0.7
       })
     });
     
