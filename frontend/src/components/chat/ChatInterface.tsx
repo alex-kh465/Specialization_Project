@@ -92,13 +92,27 @@ const ChatInterface: React.FC = () => {
       }
     } catch (error: any) {
       console.error('Chat error:', error);
-      const errorMessage: Message = {
+      
+      // Better error message handling
+      let errorMessage = 'An unexpected error occurred. Please try again.';
+      
+      if (error.message && typeof error.message === 'string') {
+        errorMessage = error.message;
+      } else if (typeof error === 'string') {
+        errorMessage = error;
+      } else if (error.error && typeof error.error === 'string') {
+        errorMessage = error.error;
+      } else if (error.response && error.response.data && error.response.data.error) {
+        errorMessage = error.response.data.error;
+      }
+      
+      const aiErrorMessage: Message = {
         id: (Date.now() + 1).toString(),
-        content: `Sorry, I encountered an error: ${error.message}. Please try again.`,
+        content: `Sorry, I encountered an error: ${errorMessage}. Please try again.`,
         sender: 'ai',
         timestamp: new Date()
       };
-      setMessages(prev => [...prev, errorMessage]);
+      setMessages(prev => [...prev, aiErrorMessage]);
     } finally {
       setIsLoading(false);
     }
