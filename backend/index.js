@@ -619,7 +619,35 @@ For non-calendar requests, respond normally as an academic assistant.`
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: message }
-        ]
+        ],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "commentary",
+              description: "Internal tool for structured responses and calendar operations",
+              parameters: {
+                type: "object",
+                properties: {
+                  type: { type: "string", description: "Type of operation" },
+                  params: { 
+                    type: "object", 
+                    description: "Parameters for the operation",
+                    additionalProperties: true 
+                  },
+                  event: { 
+                    type: "object", 
+                    description: "Event data for calendar operations",
+                    additionalProperties: true 
+                  },
+                  message: { type: "string", description: "User-friendly message" }
+                },
+                additionalProperties: true
+              }
+            }
+          }
+        ],
+        tool_choice: "auto"
       })
     });
     
@@ -628,7 +656,29 @@ For non-calendar requests, respond normally as an academic assistant.`
     
     if (!groqRes.ok) return res.status(500).json({ error: data.error || 'Groq API error' });
     
-    const aiResponse = data.choices?.[0]?.message?.content || 'No response from AI.';
+    // Handle both direct content and tool calls
+    let aiResponse = '';
+    const choice = data.choices?.[0];
+    
+    if (choice?.message?.tool_calls && choice.message.tool_calls.length > 0) {
+      // Model used a tool call - extract the arguments
+      const toolCall = choice.message.tool_calls[0];
+      if (toolCall.function?.name === 'commentary') {
+        try {
+          const args = JSON.parse(toolCall.function.arguments);
+          aiResponse = JSON.stringify(args);
+          console.log('Extracted tool call arguments:', aiResponse);
+        } catch (parseErr) {
+          console.log('Failed to parse tool call arguments:', parseErr.message);
+          aiResponse = toolCall.function.arguments || 'No response from AI.';
+        }
+      } else {
+        aiResponse = choice.message.content || 'No response from AI.';
+      }
+    } else {
+      // Regular content response
+      aiResponse = choice?.message?.content || 'No response from AI.';
+    }
     
     // Check if response contains calendar operation JSON
     console.log('AI Response:', aiResponse);
@@ -951,8 +1001,25 @@ For non-calendar requests, respond normally as an academic assistant.`
               responseMessage = searchEvents.length > 0 ? 
                 `🔍 **Found ${searchEvents.length} event(s) matching "${searchParams.query}":**\n\n` + 
                 searchEvents.slice(0, 5).map(event => {
-                  const start = new Date(event.start?.dateTime || event.start?.date);
-                  return `• **${event.summary || 'Untitled Event'}**\n  🕐 ${start.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}${event.location ? '\n  📍 ' + event.location : ''}`;
+                  // Handle both Google Calendar API format and our formatted events
+                  let startTime;
+                  if (event.start?.dateTime) {
+                    startTime = new Date(event.start.dateTime);
+                  } else if (event.start?.date) {
+                    startTime = new Date(event.start.date);
+                  } else if (event.start && typeof event.start === 'string') {
+                    startTime = new Date(event.start);
+                  } else {
+                    startTime = new Date(); // fallback
+                  }
+                  
+                  const title = event.summary || event.title || 'Untitled Event';
+                  const location = event.location || '';
+                  
+                  // Check if date is valid
+                  const dateStr = isNaN(startTime.getTime()) ? 'No date specified' : startTime.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+                  
+                  return `• **${title}**\n  🕐 ${dateStr}${location ? '\n  📍 ' + location : ''}`;
                 }).join('\n\n') :
                 `🔍 **No events found** matching "${searchParams.query}".`;
               break;
@@ -979,15 +1046,20 @@ For non-calendar requests, respond normally as an academic assistant.`
               
               if (foundEvents.length > 0) {
                 const eventToUpdate = foundEvents[0];
+                const eventTitle = eventToUpdate.summary || eventToUpdate.title || 'Untitled Event';
                 const updateData = {
                   eventId: eventToUpdate.id,
                   calendarId: 'primary',
                   ...updateParams.updates
                 };
                 calendarResult = await calendarMCP.updateEvent(updateData);
+                
+                // Get the updated title if provided in updates, otherwise use original
+                const updatedTitle = updateParams.updates?.title || updateParams.updates?.summary || eventTitle;
+                
                 responseMessage = calendarResult ? 
-                  `✅ **Event updated successfully!**\n\n📅 **${calendarResult.summary || eventToUpdate.summary}**\n🔄 Changes applied` :
-                  `❌ Failed to update event.`;
+                  `✅ **Event updated successfully!**\n\n📅 **${updatedTitle}**\n🔄 Changes applied` :
+                  `❌ Failed to update event "${eventTitle}".`;
               } else {
                 responseMessage = `❌ **Event not found** matching "${updateParams.searchQuery}".`;
               }
@@ -1015,12 +1087,13 @@ For non-calendar requests, respond normally as an academic assistant.`
               
               if (eventsToDelete.length > 0) {
                 const eventToDelete = eventsToDelete[0];
+                const eventTitle = eventToDelete.summary || eventToDelete.title || 'Untitled Event';
                 calendarResult = await calendarMCP.deleteEvent(
                   'primary',
                   eventToDelete.id,
                   'all'
                 );
-                responseMessage = `✅ **Event deleted successfully!**\n\n📅 **${eventToDelete.summary}** has been removed from your calendar.`;
+                responseMessage = `✅ **Event deleted successfully!**\n\n📅 **${eventTitle}** has been removed from your calendar.`;
               } else {
                 responseMessage = `❌ **Event not found** matching "${deleteParams.searchQuery}".`;
               }
