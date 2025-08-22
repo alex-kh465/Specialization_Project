@@ -620,9 +620,7 @@ For non-calendar requests, respond normally as an academic assistant.`
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: message }
-        ],
-        max_tokens: 1024,
-        temperature: 0.7
+        ]
       })
     });
     
