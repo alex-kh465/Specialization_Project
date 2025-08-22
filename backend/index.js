@@ -812,14 +812,85 @@ For non-calendar requests, respond normally as an academic assistant.`
               
               console.log('Normalized event data:', JSON.stringify(eventData, null, 2));
               
-              calendarResult = await calendarMCP.createEvent(eventData);
+              // Validate email addresses before attempting to create event
+              const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+              const invalidEmails = [];
+              
+              if (eventData.attendees && eventData.attendees.length > 0) {
+                for (const email of eventData.attendees) {
+                  if (email && email.trim() && !emailRegex.test(email.trim())) {
+                    invalidEmails.push(email.trim());
+                  }
+                }
+              }
+              
+              if (invalidEmails.length > 0) {
+                responseMessage = `❌ Event Creation Failed - Invalid Email Address(es)\n\n` +
+                  `The following email address(es) are not properly formatted:\n` +
+                  invalidEmails.map(email => `   • ${email}`).join('\n') + '\n\n' +
+                  `Please provide valid email addresses in the format: user@domain.com\n\n` +
+                  `Example: "Schedule a meeting with john@company.com and sarah@organization.org"`;
+                break;
+              }
+              
+              try {
+                calendarResult = await calendarMCP.createEvent(eventData);
+              } catch (createError) {
+                // Handle specific email validation errors from the calendar service
+                if (createError.message && createError.message.includes('Invalid email address')) {
+                  // Extract the invalid email from error message
+                  const emailMatch = createError.message.match(/Invalid email address: ([^\s]+)/);
+                  const invalidEmail = emailMatch ? emailMatch[1] : 'unknown';
+                  
+                  responseMessage = `❌ Event Creation Failed - Invalid Email Address\n\n` +
+                    `The email address "${invalidEmail}" is not properly formatted.\n\n` +
+                    `Please provide a valid email address in the format: user@domain.com\n\n` +
+                    `Example: "Schedule a meeting with john@company.com"`;
+                  break;
+                } else {
+                  // Re-throw other types of errors
+                  throw createError;
+                }
+              }
               
               if (calendarResult && (calendarResult.success || calendarResult.id || calendarResult.eventId)) {
                 const startDate = new Date(operationData.event.start);
                 const endDate = new Date(operationData.event.end);
-                responseMessage = `✅ **Event created successfully!**\n\n📅 **${eventData.summary}**\n📍 ${eventData.location || 'No location specified'}\n🕐 ${startDate.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} - ${endDate.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })}\n\n${eventData.description ? '📝 ' + eventData.description : ''}`;
+                const duration = Math.ceil((endDate - startDate) / (1000 * 60)); // duration in minutes
+                const durationText = duration >= 60 ? `${Math.floor(duration/60)}h ${duration%60}m` : `${duration}m`;
+                
+                responseMessage = `✅ Event Created Successfully!\n\n` +
+                  `📅 Event: ${eventData.summary}\n` +
+                  `📅 Date: ${startDate.toLocaleDateString('en-IN', { 
+                    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'Asia/Kolkata' 
+                  })}\n` +
+                  `🕐 Time: ${startDate.toLocaleTimeString('en-IN', { 
+                    hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' 
+                  })} - ${endDate.toLocaleTimeString('en-IN', { 
+                    hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' 
+                  })} (${durationText})\n` +
+                  (eventData.location ? `📍 Location: ${eventData.location}\n` : '') +
+                  (eventData.description ? `📝 Description: ${eventData.description}\n` : '');
+                
+                // Add attendees information if any
+                if (eventData.attendees && eventData.attendees.length > 0) {
+                  const validAttendees = eventData.attendees.filter(email => email && email.trim());
+                  if (validAttendees.length > 0) {
+                    responseMessage += `👥 Attendees: ${validAttendees.length} invited\n`;
+                    if (validAttendees.length <= 3) {
+                      // Show all attendees if 3 or fewer
+                      responseMessage += validAttendees.map(email => `   • ${email}`).join('\n') + '\n';
+                    } else {
+                      // Show first 2 and count for more
+                      responseMessage += validAttendees.slice(0, 2).map(email => `   • ${email}`).join('\n');
+                      responseMessage += `\n   • and ${validAttendees.length - 2} more attendee(s)\n`;
+                    }
+                  }
+                }
+                
+                responseMessage += `\n🎉 Your event has been added to your Google Calendar!`;
               } else {
-                responseMessage = `❌ Failed to create event. ${calendarResult?.error || calendarResult?.message || 'Unknown error'}`;
+                responseMessage = `❌ Failed to create event. ${calendarResult?.error || calendarResult?.message || 'Please check your calendar connection and try again.'}`;
               }
               break;
               
@@ -898,27 +969,106 @@ For non-calendar requests, respond normally as an academic assistant.`
                 }
               );
               const events = calendarResult?.events || [];
+              
+              const formatDetailedEvent = (event, index) => {
+                // Handle both Google Calendar API format and our formatted events
+                let startTime, endTime;
+                if (event.start?.dateTime) {
+                  startTime = new Date(event.start.dateTime);
+                } else if (event.start?.date) {
+                  startTime = new Date(event.start.date);
+                } else if (event.start && typeof event.start === 'string') {
+                  startTime = new Date(event.start);
+                } else {
+                  startTime = new Date(); // fallback
+                }
+                
+                if (event.end?.dateTime) {
+                  endTime = new Date(event.end.dateTime);
+                } else if (event.end?.date) {
+                  endTime = new Date(event.end.date);
+                } else if (event.end && typeof event.end === 'string') {
+                  endTime = new Date(event.end);
+                } else {
+                  endTime = new Date(startTime.getTime() + 60 * 60 * 1000); // fallback: 1 hour duration
+                }
+                
+                const title = event.summary || event.title || 'Untitled Event';
+                const description = event.description || '';
+                const location = event.location || '';
+                const creator = event.creator || event.organizer || {};
+                const attendees = event.attendees || [];
+                const status = event.status || 'confirmed';
+                
+                // Calculate duration
+                const durationMs = endTime.getTime() - startTime.getTime();
+                const durationHours = Math.floor(durationMs / (1000 * 60 * 60));
+                const durationMinutes = Math.floor((durationMs % (1000 * 60 * 60)) / (1000 * 60));
+                let durationText = '';
+                if (durationHours > 0) {
+                  durationText = `${durationHours}h${durationMinutes > 0 ? ` ${durationMinutes}m` : ''}`;
+                } else {
+                  durationText = `${durationMinutes}m`;
+                }
+                
+                // Format date and time
+                const startDateStr = startTime.toLocaleDateString('en-IN', { 
+                  weekday: 'long',
+                  year: 'numeric',
+                  month: 'long',
+                  day: 'numeric',
+                  timeZone: 'Asia/Kolkata'
+                });
+                const startTimeStr = startTime.toLocaleTimeString('en-IN', {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  timeZone: 'Asia/Kolkata'
+                });
+                const endTimeStr = endTime.toLocaleTimeString('en-IN', {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  timeZone: 'Asia/Kolkata'
+                });
+                
+                let eventDetails = `\n🔸 ${index + 1}. ${title}\n`;
+                eventDetails += `📅 Date: ${startDateStr}\n`;
+                eventDetails += `🕐 Time: ${startTimeStr} - ${endTimeStr} (${durationText})\n`;
+                
+                if (location) {
+                  eventDetails += `📍 Location: ${location}\n`;
+                }
+                
+                if (description) {
+                  const truncatedDesc = description.length > 100 ? description.substring(0, 100) + '...' : description;
+                  eventDetails += `📝 Description: ${truncatedDesc}\n`;
+                }
+                
+                if (creator.email || creator.displayName) {
+                  eventDetails += `👤 Organizer: ${creator.displayName || creator.email}\n`;
+                }
+                
+                if (attendees.length > 0) {
+                  const attendeeCount = attendees.length;
+                  const confirmedCount = attendees.filter(a => a.responseStatus === 'accepted').length;
+                  const pendingCount = attendees.filter(a => a.responseStatus === 'needsAction').length;
+                  eventDetails += `👥 Attendees: ${attendeeCount} total`;
+                  if (confirmedCount > 0) eventDetails += ` (${confirmedCount} confirmed`;
+                  if (pendingCount > 0) eventDetails += `${confirmedCount > 0 ? ', ' : ' ('}${pendingCount} pending`;
+                  if (confirmedCount > 0 || pendingCount > 0) eventDetails += ')';
+                  eventDetails += '\n';
+                }
+                
+                eventDetails += `🔗 Status: ${status.charAt(0).toUpperCase() + status.slice(1)}\n`;
+                
+                return eventDetails;
+              };
+              
               responseMessage = events.length > 0 ? 
-                `📅 **Found ${events.length} event(s):**\n\n` + 
-                events.slice(0, 10).map(event => {
-                  // Handle both Google Calendar API format and our formatted events
-                  let startTime;
-                  if (event.start?.dateTime) {
-                    startTime = new Date(event.start.dateTime);
-                  } else if (event.start?.date) {
-                    startTime = new Date(event.start.date);
-                  } else if (event.start && typeof event.start === 'string') {
-                    startTime = new Date(event.start);
-                  } else {
-                    startTime = new Date(); // fallback
-                  }
-                  
-                  const title = event.summary || event.title || 'Untitled Event';
-                  const location = event.location || '';
-                  
-                  return `• **${title}**\n  🕐 ${startTime.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}${location ? '\n  📍 ' + location : ''}`;
-                }).join('\n\n') :
-                `📅 **No events found** for the specified time period.`;
+                `📅 Calendar Events Overview\n` +
+                `Found ${events.length} event(s) from ${new Date(listTimeMin).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })} to ${new Date(listTimeMax).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })}\n` +
+                `${events.slice(0, 5).map(formatDetailedEvent).join('\n')}` +
+                (events.length > 5 ? `\n📋 Showing first 5 of ${events.length} events. Use search to filter specific events.` : '') :
+                `📅 No events found for the specified time period (${new Date(listTimeMin).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })} to ${new Date(listTimeMax).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })}).`;
               break;
               
             case 'calendar_search':
@@ -998,30 +1148,111 @@ For non-calendar requests, respond normally as an academic assistant.`
                 }
               );
               const searchEvents = calendarResult?.events || [];
+              
+              const formatDetailedSearchEvent = (event, index) => {
+                // Handle both Google Calendar API format and our formatted events
+                let startTime, endTime;
+                if (event.start?.dateTime) {
+                  startTime = new Date(event.start.dateTime);
+                } else if (event.start?.date) {
+                  startTime = new Date(event.start.date);
+                } else if (event.start && typeof event.start === 'string') {
+                  startTime = new Date(event.start);
+                } else {
+                  startTime = new Date(); // fallback
+                }
+                
+                if (event.end?.dateTime) {
+                  endTime = new Date(event.end.dateTime);
+                } else if (event.end?.date) {
+                  endTime = new Date(event.end.date);
+                } else if (event.end && typeof event.end === 'string') {
+                  endTime = new Date(event.end);
+                } else {
+                  endTime = new Date(startTime.getTime() + 60 * 60 * 1000); // fallback: 1 hour duration
+                }
+                
+                const title = event.summary || event.title || 'Untitled Event';
+                const description = event.description || '';
+                const location = event.location || '';
+                const creator = event.creator || event.organizer || {};
+                const attendees = event.attendees || [];
+                const status = event.status || 'confirmed';
+                
+                // Calculate duration
+                const durationMs = endTime.getTime() - startTime.getTime();
+                const durationHours = Math.floor(durationMs / (1000 * 60 * 60));
+                const durationMinutes = Math.floor((durationMs % (1000 * 60 * 60)) / (1000 * 60));
+                let durationText = '';
+                if (durationHours > 0) {
+                  durationText = `${durationHours}h${durationMinutes > 0 ? ` ${durationMinutes}m` : ''}`;
+                } else {
+                  durationText = `${durationMinutes}m`;
+                }
+                
+                // Check if date is valid and format accordingly
+                const startDateStr = isNaN(startTime.getTime()) ? 'No date specified' : startTime.toLocaleDateString('en-IN', { 
+                  weekday: 'long',
+                  year: 'numeric',
+                  month: 'long',
+                  day: 'numeric',
+                  timeZone: 'Asia/Kolkata'
+                });
+                const startTimeStr = isNaN(startTime.getTime()) ? 'No time' : startTime.toLocaleTimeString('en-IN', {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  timeZone: 'Asia/Kolkata'
+                });
+                const endTimeStr = isNaN(endTime.getTime()) ? 'No end time' : endTime.toLocaleTimeString('en-IN', {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  timeZone: 'Asia/Kolkata'
+                });
+                
+                let eventDetails = `\n🔸 ${index + 1}. ${title}\n`;
+                eventDetails += `📅 Date: ${startDateStr}\n`;
+                
+                if (!isNaN(startTime.getTime()) && !isNaN(endTime.getTime())) {
+                  eventDetails += `🕐 Time: ${startTimeStr} - ${endTimeStr} (${durationText})\n`;
+                } else {
+                  eventDetails += `🕐 Time: Not specified\n`;
+                }
+                
+                if (location) {
+                  eventDetails += `📍 Location: ${location}\n`;
+                }
+                
+                if (description) {
+                  const truncatedDesc = description.length > 150 ? description.substring(0, 150) + '...' : description;
+                  eventDetails += `📝 Description: ${truncatedDesc}\n`;
+                }
+                
+                if (creator.email || creator.displayName) {
+                  eventDetails += `👤 Organizer: ${creator.displayName || creator.email}\n`;
+                }
+                
+                if (attendees.length > 0) {
+                  const attendeeCount = attendees.length;
+                  const confirmedCount = attendees.filter(a => a.responseStatus === 'accepted').length;
+                  const pendingCount = attendees.filter(a => a.responseStatus === 'needsAction').length;
+                  eventDetails += `👥 Attendees: ${attendeeCount} total`;
+                  if (confirmedCount > 0) eventDetails += ` (${confirmedCount} confirmed`;
+                  if (pendingCount > 0) eventDetails += `${confirmedCount > 0 ? ', ' : ' ('}${pendingCount} pending`;
+                  if (confirmedCount > 0 || pendingCount > 0) eventDetails += ')';
+                  eventDetails += '\n';
+                }
+                
+                eventDetails += `🔗 Status: ${status.charAt(0).toUpperCase() + status.slice(1)}\n`;
+                
+                return eventDetails;
+              };
+              
               responseMessage = searchEvents.length > 0 ? 
-                `🔍 **Found ${searchEvents.length} event(s) matching "${searchParams.query}":**\n\n` + 
-                searchEvents.slice(0, 5).map(event => {
-                  // Handle both Google Calendar API format and our formatted events
-                  let startTime;
-                  if (event.start?.dateTime) {
-                    startTime = new Date(event.start.dateTime);
-                  } else if (event.start?.date) {
-                    startTime = new Date(event.start.date);
-                  } else if (event.start && typeof event.start === 'string') {
-                    startTime = new Date(event.start);
-                  } else {
-                    startTime = new Date(); // fallback
-                  }
-                  
-                  const title = event.summary || event.title || 'Untitled Event';
-                  const location = event.location || '';
-                  
-                  // Check if date is valid
-                  const dateStr = isNaN(startTime.getTime()) ? 'No date specified' : startTime.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
-                  
-                  return `• **${title}**\n  🕐 ${dateStr}${location ? '\n  📍 ' + location : ''}`;
-                }).join('\n\n') :
-                `🔍 **No events found** matching "${searchParams.query}".`;
+                `🔍 Search Results for "${searchParams.query}"\n` +
+                `Found ${searchEvents.length} matching event(s) from ${new Date(searchTimeMin).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })} to ${new Date(searchTimeMax).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })}\n` +
+                `${searchEvents.slice(0, 3).map(formatDetailedSearchEvent).join('\n')}` +
+                (searchEvents.length > 3 ? `\n🔍 Showing first 3 of ${searchEvents.length} matching events. Refine your search for more specific results.` : '') :
+                `🔍 No events found matching "${searchParams.query}" in the specified time period.`;
               break;
               
             case 'calendar_update':
@@ -1057,9 +1288,77 @@ For non-calendar requests, respond normally as an academic assistant.`
                 // Get the updated title if provided in updates, otherwise use original
                 const updatedTitle = updateParams.updates?.title || updateParams.updates?.summary || eventTitle;
                 
-                responseMessage = calendarResult ? 
-                  `✅ **Event updated successfully!**\n\n📅 **${updatedTitle}**\n🔄 Changes applied` :
-                  `❌ Failed to update event "${eventTitle}".`;
+                // Helper function to safely parse dates
+                const parseEventDate = (dateInput) => {
+                  if (!dateInput) return null;
+                  
+                  try {
+                    // Handle different date formats
+                    let dateStr = dateInput;
+                    if (typeof dateInput === 'object') {
+                      dateStr = dateInput.dateTime || dateInput.date || dateInput;
+                    }
+                    
+                    if (typeof dateStr === 'string') {
+                      const parsedDate = new Date(dateStr);
+                      return isNaN(parsedDate.getTime()) ? null : parsedDate;
+                    }
+                    
+                    return null;
+                  } catch (error) {
+                    console.warn('Date parsing failed:', dateInput, error);
+                    return null;
+                  }
+                };
+                
+                const originalStart = parseEventDate(eventToUpdate.start);
+                
+                if (calendarResult) {
+                  responseMessage = `✅ Event Updated Successfully!\n\n` +
+                    `📅 Event: ${updatedTitle}\n`;
+                  
+                  // Show original date if available
+                  if (originalStart) {
+                    responseMessage += `📅 Original Date: ${originalStart.toLocaleDateString('en-IN', { 
+                      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'Asia/Kolkata' 
+                    })}\n`;
+                    responseMessage += `🕐 Original Time: ${originalStart.toLocaleTimeString('en-IN', { 
+                      hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' 
+                    })}\n`;
+                  }
+                  
+                  // Show what was updated
+                  const updates = [];
+                  if (updateParams.updates?.title || updateParams.updates?.summary) {
+                    updates.push(`📝 Title updated to: ${updatedTitle}`);
+                  }
+                  if (updateParams.updates?.start) {
+                    const newStart = parseEventDate(updateParams.updates.start);
+                    if (newStart) {
+                      updates.push(`🕐 Time updated to: ${newStart.toLocaleDateString('en-IN', { 
+                        weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Kolkata' 
+                      })} at ${newStart.toLocaleTimeString('en-IN', { 
+                        hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' 
+                      })}`);
+                    } else {
+                      updates.push(`🕐 Time updated`);
+                    }
+                  }
+                  if (updateParams.updates?.location) {
+                    updates.push(`📍 Location updated to: ${updateParams.updates.location}`);
+                  }
+                  if (updateParams.updates?.description) {
+                    updates.push(`📝 Description updated`);
+                  }
+                  
+                  if (updates.length > 0) {
+                    responseMessage += `\n🔄 Changes Applied:\n${updates.join('\n')}`;
+                  }
+                  
+                  responseMessage += `\n\n✨ Your calendar has been updated!`;
+                } else {
+                  responseMessage = `❌ Failed to update event "${eventTitle}". Please check your calendar connection and try again.`;
+                }
               } else {
                 responseMessage = `❌ **Event not found** matching "${updateParams.searchQuery}".`;
               }
@@ -1088,14 +1387,63 @@ For non-calendar requests, respond normally as an academic assistant.`
               if (eventsToDelete.length > 0) {
                 const eventToDelete = eventsToDelete[0];
                 const eventTitle = eventToDelete.summary || eventToDelete.title || 'Untitled Event';
+                const eventLocation = eventToDelete.location || '';
+                
+                // Helper function to safely parse dates
+                const parseEventDate = (dateInput) => {
+                  if (!dateInput) return null;
+                  
+                  try {
+                    // Handle different date formats
+                    let dateStr = dateInput;
+                    if (typeof dateInput === 'object') {
+                      dateStr = dateInput.dateTime || dateInput.date || dateInput;
+                    }
+                    
+                    if (typeof dateStr === 'string') {
+                      const parsedDate = new Date(dateStr);
+                      return isNaN(parsedDate.getTime()) ? null : parsedDate;
+                    }
+                    
+                    return null;
+                  } catch (error) {
+                    console.warn('Date parsing failed:', dateInput, error);
+                    return null;
+                  }
+                };
+                
+                const eventStart = parseEventDate(eventToDelete.start);
+                
                 calendarResult = await calendarMCP.deleteEvent(
                   'primary',
                   eventToDelete.id,
                   'all'
                 );
-                responseMessage = `✅ **Event deleted successfully!**\n\n📅 **${eventTitle}** has been removed from your calendar.`;
+                
+                if (calendarResult !== false) {
+                  responseMessage = `✅ Event Deleted Successfully!\n\n` +
+                    `📅 Event: ${eventTitle}\n`;
+                  
+                  // Add date and time if available
+                  if (eventStart) {
+                    responseMessage += `📅 Date: ${eventStart.toLocaleDateString('en-IN', { 
+                      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'Asia/Kolkata' 
+                    })}\n` +
+                    `🕐 Time: ${eventStart.toLocaleTimeString('en-IN', { 
+                      hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' 
+                    })}\n`;
+                  } else {
+                    responseMessage += `📅 Date: Not specified\n`;
+                    responseMessage += `🕐 Time: Not specified\n`;
+                  }
+                  
+                  responseMessage += (eventLocation ? `📍 Location: ${eventLocation}\n` : '') +
+                    `\n🗑️ This event has been removed from your Google Calendar.`;
+                } else {
+                  responseMessage = `❌ Failed to delete event "${eventTitle}". Please check your calendar connection and try again.`;
+                }
               } else {
-                responseMessage = `❌ **Event not found** matching "${deleteParams.searchQuery}".`;
+                responseMessage = `❌ Event not found matching "${deleteParams.searchQuery}". Please check the event name and try again.`;
               }
               break;
               
