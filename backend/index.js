@@ -457,8 +457,10 @@ app.post('/auth/google-callback', async (req, res) => {
 
 // AI Chat endpoint with Enhanced Calendar Integration (Groq integration)
 app.post('/ai/chat', authenticate, async (req, res) => {
-  const { message } = req.body;
+  const { message, context, conversationId } = req.body;
   console.log('Received message:', message);
+  console.log('Received context:', context ? `${context.length} messages` : 'No context');
+  console.log('Conversation ID:', conversationId);
   if (!message) return res.status(400).json({ error: 'Message is required' });
   
   try {
@@ -608,6 +610,28 @@ CRITICAL - GOOGLE CALENDAR API DATETIME FORMAT REQUIREMENTS:
 
 For non-calendar requests, respond normally as an academic assistant.`
 
+    // Build conversation messages array with context
+    const messages = [{ role: 'system', content: systemPrompt }];
+    
+    // Add conversation context if available
+    if (context && Array.isArray(context) && context.length > 0) {
+      console.log('Adding conversation context to AI request:', context.length, 'messages');
+      // Add all context messages except the current one
+      context.forEach(contextMessage => {
+        if (contextMessage.role && contextMessage.content) {
+          messages.push({
+            role: contextMessage.role,
+            content: contextMessage.content
+          });
+        }
+      });
+    }
+    
+    // Add the current user message
+    messages.push({ role: 'user', content: message });
+    
+    console.log('Sending to Groq AI:', messages.length, 'messages (including system prompt)');
+    
     // Try without tools first to avoid tool validation errors
     const groqRes = await fetch(process.env.GROQ_API_URL, {
       method: 'POST',
@@ -617,10 +641,7 @@ For non-calendar requests, respond normally as an academic assistant.`
       },
       body: JSON.stringify({
         model: 'llama-3.3-70b-versatile',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: message }
-        ]
+        messages: messages
       })
     });
     
@@ -2973,6 +2994,10 @@ app.delete('/auth/delete-account', authenticate, async (req, res) => {
 // Setup new calendar endpoints
 setupCalendarEndpoints(app, authenticate);
 
+// Import and setup chat memory routes
+import chatMemoryRoutes from './routes/chatMemoryRoutes.js';
+app.use('/chat', authenticate, chatMemoryRoutes);
+
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`Backend API running on port ${PORT}`);
@@ -2990,5 +3015,18 @@ app.listen(PORT, () => {
   console.log('  GET  /calendar/availability/next - Find next slot');
   console.log('  GET  /calendar/status          - Service status');
   console.log('  GET  /calendar/health          - Health check');
+  console.log('');
+  console.log('Available chat memory endpoints:');
+  console.log('  GET  /chat/conversations       - List conversations');
+  console.log('  POST /chat/conversations       - Create conversation');
+  console.log('  GET  /chat/conversations/:id   - Get conversation');
+  console.log('  PUT  /chat/conversations/:id   - Update conversation');
+  console.log('  DELETE /chat/conversations/:id - Delete conversation');
+  console.log('  GET  /chat/conversations/:id/messages - Get messages');
+  console.log('  POST /chat/conversations/:id/messages - Add message');
+  console.log('  GET  /chat/search              - Search conversations');
+  console.log('  GET  /chat/analytics           - Get chat analytics');
+  console.log('  POST /chat/start-session       - Start new chat session');
+  console.log('  GET  /chat/health              - Chat service health check');
 });
 
