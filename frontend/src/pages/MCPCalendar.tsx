@@ -553,11 +553,25 @@ const MCPCalendar: React.FC = () => {
     try {
       const token = getToken();
       
-      // Ensure datetime format includes seconds
+      // Helper function to convert datetime-local value to IST timezone-aware format
+      const convertToIST = (datetimeLocal) => {
+        if (!datetimeLocal) return datetimeLocal;
+        
+        // datetime-local gives us YYYY-MM-DDTHH:MM or YYYY-MM-DDTHH:MM:SS in local time
+        let formattedDateTime = datetimeLocal.includes(':') && datetimeLocal.split(':').length === 2 
+          ? datetimeLocal + ':00' 
+          : datetimeLocal;
+        
+        // Simply append IST timezone offset to treat the time as IST
+        // This tells the backend that this time is in IST timezone
+        return formattedDateTime + '+05:30';
+      };
+      
       const eventData = {
         ...newEvent,
-        start: newEvent.start.includes(':') && newEvent.start.split(':').length === 2 ? newEvent.start + ':00' : newEvent.start,
-        end: newEvent.end.includes(':') && newEvent.end.split(':').length === 2 ? newEvent.end + ':00' : newEvent.end
+        start: convertToIST(newEvent.start),
+        end: convertToIST(newEvent.end),
+        timeZone: 'Asia/Kolkata'
       };
       
       const response = await fetch(`${API_URL}/calendar/mcp/events`, {
@@ -628,7 +642,7 @@ const MCPCalendar: React.FC = () => {
     try {
       const token = getToken();
       
-      // Ensure datetime format includes seconds
+      // Ensure datetime format includes seconds and add IST timezone
       const eventData = {
         calendarId: 'primary',
         summary: newEvent.summary,
@@ -638,7 +652,8 @@ const MCPCalendar: React.FC = () => {
         location: newEvent.location,
         attendees: newEvent.attendees,
         colorId: newEvent.colorId,
-        reminders: newEvent.reminders
+        reminders: newEvent.reminders,
+        timeZone: 'Asia/Kolkata'
       };
       
       const response = await fetch(`${API_URL}/calendar/mcp/events/${editingEvent.id}`, {
@@ -736,6 +751,32 @@ const MCPCalendar: React.FC = () => {
     const primaryCal = calendars.find(c => c.primary);
     const defaultCalendarId = primaryCal ? primaryCal.id : 'primary';
     
+    // Helper function to convert UTC datetime to IST for form display
+    const convertUTCToISTForForm = (utcDateTime) => {
+      if (!utcDateTime) return '';
+      
+      try {
+        // Create a date object from the UTC datetime
+        const utcDate = new Date(utcDateTime);
+        
+        // Convert to IST by adding 5 hours 30 minutes (330 minutes)
+        const istDate = new Date(utcDate.getTime() + (330 * 60 * 1000));
+        
+        // Format for datetime-local input (YYYY-MM-DDTHH:MM:SS)
+        const year = istDate.getUTCFullYear();
+        const month = String(istDate.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(istDate.getUTCDate()).padStart(2, '0');
+        const hours = String(istDate.getUTCHours()).padStart(2, '0');
+        const minutes = String(istDate.getUTCMinutes()).padStart(2, '0');
+        const seconds = String(istDate.getUTCSeconds()).padStart(2, '0');
+        
+        return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}`;
+      } catch (error) {
+        console.error('Error converting UTC to IST for form:', error);
+        return utcDateTime.slice(0, 19); // Fallback to original format
+      }
+    };
+    
     // Prepare attendees data - ensure we have email addresses
     const eventAttendees = eventToUse.attendees?.map(a => ({ 
       email: a.email || a.displayName || a 
@@ -783,12 +824,21 @@ const MCPCalendar: React.FC = () => {
     console.log('📝 Form reminders will be set to:', formReminders);
     console.log('📝 Custom reminders state will be set to:', eventReminders.overrides || []);
     
+    // Debug datetime conversion
+    console.log('🕒 DATETIME CONVERSION DEBUG:');
+    console.log('Original start:', eventToUse.start.dateTime);
+    console.log('Original end:', eventToUse.end.dateTime);
+    const convertedStart = convertUTCToISTForForm(eventToUse.start.dateTime);
+    const convertedEnd = convertUTCToISTForForm(eventToUse.end.dateTime);
+    console.log('Converted start (IST):', convertedStart);
+    console.log('Converted end (IST):', convertedEnd);
+    
     setNewEvent({
       calendarId: defaultCalendarId,
       summary: eventToUse.summary,
       description: eventToUse.description || '',
-      start: eventToUse.start.dateTime.slice(0, 19),
-      end: eventToUse.end.dateTime.slice(0, 19),
+      start: convertedStart,
+      end: convertedEnd,
       location: eventToUse.location || '',
       attendees: eventAttendees,
       colorId: eventToUse.colorId,
